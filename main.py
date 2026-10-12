@@ -1,29 +1,29 @@
 import emioapi
 from emioapi._logging_config import logger
-from pynput import keyboard
+import tkinkter
+import threading
+import time
 
 MOTOR_CONTROL_AMOUNT = 0.05
 MOTOR_MAX_AMOUNT = 2
 GLOBAL_KEYS = ['q', 'w', 'e','r', 'a', 's', 'd', 'f']
 keys_pressed = [False, False, False, False, False, False, False, False]
+system_exit = False
 
-def on_press(key, injected):
-    global keys_pressed
-    try:
-        for i in range(0, len(GLOBAL_KEYS)):
-            if key.char == GLOBAL_KEYS[i]:
-                keys_pressed[i] = True
-    except AttributeError:
-        print('special key {} pressed'.format(key))
+def raise_stop_flag():
+    global system_exit
+    system_exit = True
 
-def on_release(key, injected):
+def key_handler(event):
     global keys_pressed
+    print(event.char, event.keysym, event.keycode)
     for i in range(0, len(GLOBAL_KEYS)):
-        if key.char == GLOBAL_KEYS[i]:
-            keys_pressed[i] = False
+        if event.char == GLOBAL_KEYS[i]:
+            keys_pressed[i] = True
 
 def main():
     global keys_pressed
+    global system_exit
 
     emio_motors = None
     emio_camera = None
@@ -73,6 +73,7 @@ def main():
                     emio_motors_coords[2] -= MOTOR_CONTROL_AMOUNT
                 if keys_pressed[7]:
                     emio_motors_coords[3] -= MOTOR_CONTROL_AMOUNT
+                keys_pressed = [False, False, False, False, False, False, False, False]
                 # Limit check
                 for i in range(0, len(emio_motors_coords)):
                     if emio_motors_coords[i] < 0:
@@ -81,22 +82,29 @@ def main():
                         emio_motors_coords[i] = MOTOR_MAX_AMOUNT
                 # Actually run it
                 emio_motors.angles = emio_motors_coords
+                logger.info(str(emio_motors_coords))
+                if system_exit:
+                    break
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received.")
                 break
     except Exception as e:
         logger.exception(f"An error occurred: {e}")
-        if emio_motors:
-            emio_motors.close()
-        if emio_camera:
-            emio_camera.close()
+    # Close GUI window and motors
+    if emio_motors:
+        emio_motors.close()
+    if emio_camera:
+        emio_camera.close()
+    if root:
+        root.destroy()
 
 if __name__ == "__main__":
-    # Start keyboard listener
-    listener = keyboard.Listener(
-        on_press=on_press,
-        on_release=on_release)
-    listener.start()
+    # Start GUI window
+    root = tkinter.Tk()
+    root.title("ME4242 Navigation Project")
+    tkinter.Button(root, text="Stop", command=raise_stop_flag).pack()
 
-    main()
+    thread = threading.Thread(target=main, daemon=True)
+    thread.start()
+    root.mainloop()
 
