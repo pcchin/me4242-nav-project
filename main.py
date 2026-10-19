@@ -8,6 +8,7 @@ import traceback
 
 MOTOR_CONTROL_AMOUNT = 0.05
 MOTOR_MAX_AMOUNT = 3
+MOTOR_MIN_AMOUNT = -1
 GLOBAL_KEYS = ['q', 'w', 'e','r', 'a', 's', 'd', 'f']
 keys_pressed = [False, False, False, False, False, False, False, False]
 system_exit = False
@@ -29,6 +30,12 @@ def signal_handler(sig, frame):
     print("Stop flag raised via Ctrl-C")
     system_exit = True
 
+def check_exit():
+    if system_exit:
+        root.quit()
+    else:
+        root.after(50, check_exit)
+
 def main():
     global keys_pressed
     global system_exit
@@ -38,32 +45,31 @@ def main():
     emio_motors_coords = [0,0,0,0]
 
     try:
-        #emio_camera = emioapi.EmioCamera(show=True, track_markers=True, compute_point_cloud=True)
-        #emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
-        #emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
-        #emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
+        emio_camera = emioapi.EmioCamera(show=False, track_markers=True, compute_point_cloud=True)
+        emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
+        emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
+        emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
         emio_motors = emioapi.EmioMotors()
 
-        #if not emio_camera.open():
-        #    raise RuntimeError("Unable to open EMIO camera")
+        if not emio_camera.open():
+            raise RuntimeError("Unable to open EMIO camera")
         if not emio_motors.open():
             raise RuntimeError("Unable to open EMIO motors")
 
-        #while emio_camera.is_running:
-        while True:
+        while emio_camera.is_running:
             try:
-                #emio_camera.update()
+                emio_camera.update()
                 print("-"*20)
-                #logger.info(f"Camera parameters: {emio_camera.parameters}")
-                #logger.info(f"Camera show: {emio_camera.show_frames}")
-                #logger.info(f"Camera tracking: {emio_camera.track_markers}")
-                #logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
-                #logger.info(f"Camera is running: {emio_camera.is_running}")
-                #logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
-                #logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
-                #logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
-                #logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
-                #logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
+                logger.info(f"Camera parameters: {emio_camera.parameters}")
+                logger.info(f"Camera show: {emio_camera.show_frames}")
+                logger.info(f"Camera tracking: {emio_camera.track_markers}")
+                logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
+                logger.info(f"Camera is running: {emio_camera.is_running}")
+                logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
+                logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
+                logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
+                logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
+                logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
 
                 # Check keyboard input
                 if keys_pressed[0]:
@@ -85,8 +91,8 @@ def main():
                 keys_pressed = [False, False, False, False, False, False, False, False]
                 # Limit check
                 for i in range(0, len(emio_motors_coords)):
-                    if emio_motors_coords[i] < 0:
-                        emio_motors_coords[i] = 0
+                    if emio_motors_coords[i] < MOTOR_MIN_AMOUNT:
+                        emio_motors_coords[i] = MOTOR_MIN_AMOUNT
                     if emio_motors_coords[i] > MOTOR_MAX_AMOUNT:
                         emio_motors_coords[i] = MOTOR_MAX_AMOUNT
                 # Actually run it
@@ -101,8 +107,6 @@ def main():
         print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
-    if root:
-        root.destroy()
     if emio_motors:
         emio_motors.close()
     if emio_camera:
@@ -117,7 +121,13 @@ if __name__ == "__main__":
     root.title("ME4242 Navigation Project")
     tkinter.Button(root, text="Stop", command=raise_stop_flag).pack()
 
+    # Bind all keys
+    for i in range(0, len(GLOBAL_KEYS)):
+        root.bind(GLOBAL_KEYS[i], key_handler)
+
     thread = threading.Thread(target=main, daemon=True)
     thread.start()
+    root.after(50, check_exit)
     root.mainloop()
+    root.destroy()
 
