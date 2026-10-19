@@ -17,6 +17,12 @@ system_exit = False
 CALIBRATION_HARDCODE_ZERO = [0,-200,0]
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 
+# Move Motors 0 & 1 to +ve value - Moves away from camera (+ve 1st value)
+# Move Motors 2 & 3 to +ve value - Moves towards camera (-ve 1st value)
+# Motors 1 & 3 / 2 & 4 tgt - Stiffen
+# Motors 2 & 3 +ve value - Moves to left of POV camera (-ve 3rd value)
+# Motors 1 & 4 +ve value - Moves to right of POV camera (+ve 3rd value)
+
 def raise_stop_flag():
     global system_exit
     print("Stop flag raised via button")
