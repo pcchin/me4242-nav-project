@@ -5,6 +5,7 @@ import threading
 import time
 import signal
 import traceback
+from enum import Enum
 
 USE_CONTROL_GUI = False
 
@@ -22,6 +23,10 @@ TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 # Motors 1 & 3 / 2 & 4 tgt - Stiffen
 # Motors 2 & 3 +ve value - Moves to left of POV camera (-ve 3rd value)
 # Motors 1 & 4 +ve value - Moves to right of POV camera (+ve 3rd value)
+
+class RobotMode(Enum):
+    MOVING_TO_ORIGIN = 1
+    MOVING_TO_TARGET = 2
 
 def raise_stop_flag():
     global system_exit
@@ -53,7 +58,12 @@ def main():
     emio_motors = None
     emio_camera = None
     emio_motors_coords = [0,0,0,0]
+    current_end_effector_coords = None
     prior_end_effector_coords = None
+    prior_end_effector_velocity = None
+
+    # Hardcoded navigation mmode
+    navigation_mode = 0
 
     try:
         emio_camera = emioapi.EmioCamera(show=not USE_CONTROL_GUI, track_markers=True, compute_point_cloud=True)
@@ -88,10 +98,29 @@ def main():
                                   p[k] <= TASK_SPACE_BOUNDARY[k][1] for k in range(0, len(TASK_SPACE_BOUNDARY))])]
                 logger.info(f"Valid trackers: {valid_trackers}")
 
-                if not prior_end_effector_coords:
-                    prior_end_effector_coords = valid_trackers[0].copy()
-                    logger.info("Setting end effector coords to first available valid tracker")
-                    logger.info(f"{valid_trackers[0]}")
+                # Find new postion of end effector
+                if (not valid_trackers) or len(valid_trackers) == 0:
+                    logger.error("No trackers found, end effector may be obstructed")
+                else:
+                    if not prior_end_effector_coords:
+                        prior_end_effector_coords = valid_trackers[0].copy()
+                        current_end_effector_coords = prior_end_effector_coords.copy()
+                        logger.info("Setting end effector coords to first available valid tracker")
+                        logger.info(f"{valid_trackers[0]}")
+                    else:
+                        tgt = 0
+                        if prior_end_effector_coords is not None:
+                            prior_end_effector_coords = current_end_effector_coords
+                        current_min_square_error = None
+                        prior_end_effector_coords_square = sum([i ** 2 for i in prior_end_effector_coords])
+                        for i in range(0, len(valid_trackers)):
+                            current_square = sum([j ** 2 for j in valid_trackers[j]])
+                            if current_min_square_error is None or current_min_square_error > current_square:
+                                tgt = i
+                                current_end_effector_coords = valid_trackers[i]
+                                current_min_square_error = current_square
+                # Find new velocity of end effector
+                prior_end_effector_velocity = [current_end_effector_coords[i] - prior_end_effector_coords[i] for i in range(0, len(prior_end_effector_coords))]
 
                 # Check keyboard input
                 if USE_CONTROL_GUI:
@@ -112,6 +141,7 @@ def main():
                     if keys_pressed[7]:
                         emio_motors_coords[3] -= MOTOR_CONTROL_AMOUNT
                     keys_pressed = [False, False, False, False, False, False, False, False]
+
                 # Limit check
                 for i in range(0, len(emio_motors_coords)):
                     if emio_motors_coords[i] < MOTOR_MIN_AMOUNT:
