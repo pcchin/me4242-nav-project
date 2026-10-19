@@ -1,17 +1,20 @@
 import emioapi
 from emioapi._logging_config import logger
-import tkinkter
+import tkinter
 import threading
 import time
+import signal
+import traceback
 
 MOTOR_CONTROL_AMOUNT = 0.05
-MOTOR_MAX_AMOUNT = 2
+MOTOR_MAX_AMOUNT = 3
 GLOBAL_KEYS = ['q', 'w', 'e','r', 'a', 's', 'd', 'f']
 keys_pressed = [False, False, False, False, False, False, False, False]
 system_exit = False
 
 def raise_stop_flag():
     global system_exit
+    print("Stop flag raised via button")
     system_exit = True
 
 def key_handler(event):
@@ -20,6 +23,11 @@ def key_handler(event):
     for i in range(0, len(GLOBAL_KEYS)):
         if event.char == GLOBAL_KEYS[i]:
             keys_pressed[i] = True
+
+def signal_handler(sig, frame):
+    global system_exit
+    print("Stop flag raised via Ctrl-C")
+    system_exit = True
 
 def main():
     global keys_pressed
@@ -30,31 +38,32 @@ def main():
     emio_motors_coords = [0,0,0,0]
 
     try:
+        #emio_camera = emioapi.EmioCamera(show=True, track_markers=True, compute_point_cloud=True)
+        #emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
+        #emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
+        #emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
         emio_motors = emioapi.EmioMotors()
-        emio_camera = emioapi.EmioCamera(show=True, track_markers=True, compute_point_cloud=True)
-        emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
-        emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
-        emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
 
-        if not emio_camera.open():
-            raise RuntimeException("Unable to open EMIO camera")
+        #if not emio_camera.open():
+        #    raise RuntimeError("Unable to open EMIO camera")
         if not emio_motors.open():
-            raise RuntimeException("Unable to open EMIO motors")
+            raise RuntimeError("Unable to open EMIO motors")
 
-        while emio_camera.is_running:
+        #while emio_camera.is_running:
+        while True:
             try:
-                emio_camera.update()
+                #emio_camera.update()
                 print("-"*20)
-                logger.info(f"Camera parameters: {emio_camera.parameters}")
-                logger.info(f"Camera show: {emio_camera.show_frames}")
-                logger.info(f"Camera tracking: {emio_camera.track_markers}")
-                logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
-                logger.info(f"Camera is running: {emio_camera.is_running}")
-                logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
-                logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
-                logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
-                logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
-                logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
+                #logger.info(f"Camera parameters: {emio_camera.parameters}")
+                #logger.info(f"Camera show: {emio_camera.show_frames}")
+                #logger.info(f"Camera tracking: {emio_camera.track_markers}")
+                #logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
+                #logger.info(f"Camera is running: {emio_camera.is_running}")
+                #logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
+                #logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
+                #logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
+                #logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
+                #logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
 
                 # Check keyboard input
                 if keys_pressed[0]:
@@ -89,16 +98,20 @@ def main():
                 logger.info("Keyboard interrupt received.")
                 break
     except Exception as e:
+        print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
+    if root:
+        root.destroy()
     if emio_motors:
         emio_motors.close()
     if emio_camera:
         emio_camera.close()
-    if root:
-        root.destroy()
+    raise SystemExit
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+
     # Start GUI window
     root = tkinter.Tk()
     root.title("ME4242 Navigation Project")
