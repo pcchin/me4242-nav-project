@@ -1,0 +1,39 @@
+{
+  "labs": [
+    {
+      "name": "introduction",
+      "title": "Introduction",
+      "description": "discover Emio and its software GUI"
+    },
+    {
+      "name": "lab_models",
+      "title": "Lab Models",
+      "description": "discover and analyse different models"
+    },
+    {
+      "name": "lab_inversekinematics",
+      "title": "Lab Inverse Kinematics",
+      "description": "implement your own quadratic program"
+    },
+    {
+      "name": "project_pickandplace",
+      "title": "Project Pick & Place",
+      "description": "solve a pick and place task"
+    },
+    {
+      "name": "lab_design",
+      "title": "Lab Design",
+      "description": "design your own legs and gripper for Emio"
+    },
+    {
+      "name": "lab_closedloop",
+      "title": "Lab Closed Loop",
+      "description": "discover and implement a closed loop controller"
+    },
+    {
+      "name": "sandbox",
+      "title": "Sandbox",
+      "description": "set up Emio exactly how you want"
+    }
+  ]
+}
