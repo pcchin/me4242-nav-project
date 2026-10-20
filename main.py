@@ -5,6 +5,9 @@ import threading
 import time
 import signal
 import traceback
+from enum import Enum
+
+USE_CONTROL_GUI = False
 
 MOTOR_CONTROL_AMOUNT = 0.05
 MOTOR_MAX_AMOUNT = 3
@@ -12,6 +15,18 @@ MOTOR_MIN_AMOUNT = -1
 GLOBAL_KEYS = ['q', 'w', 'e','r', 'a', 's', 'd', 'f']
 keys_pressed = [False, False, False, False, False, False, False, False]
 system_exit = False
+CALIBRATION_HARDCODE_ZERO = [0,-200,0]
+TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
+
+# Move Motors 0 & 1 to +ve value - Moves away from camera (+ve 1st value)
+# Move Motors 2 & 3 to +ve value - Moves towards camera (-ve 1st value)
+# Motors 1 & 3 / 2 & 4 tgt - Stiffen
+# Motors 2 & 3 +ve value - Moves to left of POV camera (-ve 3rd value)
+# Motors 1 & 4 +ve value - Moves to right of POV camera (+ve 3rd value)
+
+class RobotMode(Enum):
+    MOVING_TO_ORIGIN = 1
+    MOVING_TO_TARGET = 2
 
 def raise_stop_flag():
     global system_exit
@@ -43,9 +58,15 @@ def main():
     emio_motors = None
     emio_camera = None
     emio_motors_coords = [0,0,0,0]
+    current_end_effector_coords = None
+    prior_end_effector_coords = None
+    prior_end_effector_velocity = None
+
+    # Hardcoded navigation mmode
+    navigation_mode = 0
 
     try:
-        emio_camera = emioapi.EmioCamera(show=False, track_markers=True, compute_point_cloud=True)
+        emio_camera = emioapi.EmioCamera(show=not USE_CONTROL_GUI, track_markers=True, compute_point_cloud=True)
         emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
         emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
         emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
@@ -60,35 +81,67 @@ def main():
             try:
                 emio_camera.update()
                 print("-"*20)
-                logger.info(f"Camera parameters: {emio_camera.parameters}")
-                logger.info(f"Camera show: {emio_camera.show_frames}")
-                logger.info(f"Camera tracking: {emio_camera.track_markers}")
-                logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
-                logger.info(f"Camera is running: {emio_camera.is_running}")
-                logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
-                logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
-                logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
-                logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
-                logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
+                #logger.info(f"Camera parameters: {emio_camera.parameters}")
+                #logger.info(f"Camera show: {emio_camera.show_frames}")
+                #logger.info(f"Camera tracking: {emio_camera.track_markers}")
+                #logger.info(f"Camera compute point cloud: {emio_camera.compute_point_cloud}")
+                #logger.info(f"Camera is running: {emio_camera.is_running}")
+                #logger.info(f"Count tracker: {len(emio_camera.trackers_pos)}")
+                #logger.info(f"Trackers positions: {emio_camera.trackers_pos}")
+                #logger.info(f"Point cloud shape: {emio_camera.point_cloud.shape}")
+                #logger.info(f"HSV Frame shape: {emio_camera.hsv_frame.shape}")
+                #logger.info(f"Mask Frame shape: {emio_camera.mask_frame.shape}")
+
+                # Filter valid trackers
+                valid_trackers = [p for p in emio_camera.trackers_pos if all([
+                                  p[k] >= TASK_SPACE_BOUNDARY[k][0] and
+                                  p[k] <= TASK_SPACE_BOUNDARY[k][1] for k in range(0, len(TASK_SPACE_BOUNDARY))])]
+                logger.info(f"Valid trackers: {valid_trackers}")
+
+                # Find new postion of end effector
+                if (not valid_trackers) or len(valid_trackers) == 0:
+                    logger.error("No trackers found, end effector may be obstructed")
+                else:
+                    if not prior_end_effector_coords:
+                        prior_end_effector_coords = valid_trackers[0].copy()
+                        current_end_effector_coords = prior_end_effector_coords.copy()
+                        logger.info("Setting end effector coords to first available valid tracker")
+                        logger.info(f"{valid_trackers[0]}")
+                    else:
+                        tgt = 0
+                        if prior_end_effector_coords is not None:
+                            prior_end_effector_coords = current_end_effector_coords
+                        current_min_square_error = None
+                        prior_end_effector_coords_square = sum([i ** 2 for i in prior_end_effector_coords])
+                        for i in range(0, len(valid_trackers)):
+                            current_square = sum([j ** 2 for j in valid_trackers[j]])
+                            if current_min_square_error is None or current_min_square_error > current_square:
+                                tgt = i
+                                current_end_effector_coords = valid_trackers[i]
+                                current_min_square_error = current_square
+                # Find new velocity of end effector
+                prior_end_effector_velocity = [current_end_effector_coords[i] - prior_end_effector_coords[i] for i in range(0, len(prior_end_effector_coords))]
 
                 # Check keyboard input
-                if keys_pressed[0]:
-                    emio_motors_coords[0] += MOTOR_CONTROL_AMOUNT
-                if keys_pressed[1]:
-                    emio_motors_coords[1] += MOTOR_CONTROL_AMOUNT
-                if keys_pressed[2]:
-                    emio_motors_coords[2] += MOTOR_CONTROL_AMOUNT
-                if keys_pressed[3]:
-                    emio_motors_coords[3] += MOTOR_CONTROL_AMOUNT
-                if keys_pressed[4]:
-                    emio_motors_coords[0] -= MOTOR_CONTROL_AMOUNT
-                if keys_pressed[5]:
-                    emio_motors_coords[1] -= MOTOR_CONTROL_AMOUNT
-                if keys_pressed[6]:
-                    emio_motors_coords[2] -= MOTOR_CONTROL_AMOUNT
-                if keys_pressed[7]:
-                    emio_motors_coords[3] -= MOTOR_CONTROL_AMOUNT
-                keys_pressed = [False, False, False, False, False, False, False, False]
+                if USE_CONTROL_GUI:
+                    if keys_pressed[0]:
+                        emio_motors_coords[0] += MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[1]:
+                        emio_motors_coords[1] += MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[2]:
+                        emio_motors_coords[2] += MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[3]:
+                        emio_motors_coords[3] += MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[4]:
+                        emio_motors_coords[0] -= MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[5]:
+                        emio_motors_coords[1] -= MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[6]:
+                        emio_motors_coords[2] -= MOTOR_CONTROL_AMOUNT
+                    if keys_pressed[7]:
+                        emio_motors_coords[3] -= MOTOR_CONTROL_AMOUNT
+                    keys_pressed = [False, False, False, False, False, False, False, False]
+
                 # Limit check
                 for i in range(0, len(emio_motors_coords)):
                     if emio_motors_coords[i] < MOTOR_MIN_AMOUNT:
@@ -117,17 +170,18 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
     # Start GUI window
-    root = tkinter.Tk()
-    root.title("ME4242 Navigation Project")
-    tkinter.Button(root, text="Stop", command=raise_stop_flag).pack()
-
-    # Bind all keys
-    for i in range(0, len(GLOBAL_KEYS)):
-        root.bind(GLOBAL_KEYS[i], key_handler)
-
-    thread = threading.Thread(target=main, daemon=True)
-    thread.start()
-    root.after(50, check_exit)
-    root.mainloop()
-    root.destroy()
+    if USE_CONTROL_GUI:
+        root = tkinter.Tk()
+        root.title("ME4242 Navigation Project")
+        tkinter.Button(root, text="Stop", command=raise_stop_flag).pack()
+        # Bind all keys
+        for i in range(0, len(GLOBAL_KEYS)):
+            root.bind(GLOBAL_KEYS[i], key_handler)
+        thread = threading.Thread(target=main, daemon=True)
+        thread.start()
+        root.after(50, check_exit)
+        root.mainloop()
+        root.destroy()
+    else:
+        main()
 
