@@ -27,6 +27,8 @@ class ContinuumRobot(Sofa.Prefab):
         - `pullPoints` (`list[Vec3d]`, optional): Where each cable is pulled from (e.g. the motors' spools).
           By default, 10 mm above the cable hole of the base. Cable `i` goes through the holes at angle
           `2*pi*i/nbCables` around Y (same convention as the Emio motors), so cable `i` faces motor `i`.
+        - `cableAngles` (`list[float]`, optional): angle of each cable's holes around Y (rad, 0 = +Z, pi/2 = +X),
+          e.g. from a calibration. Defaults to `2*pi*i/nbCables`.
 
     Class Variables:
         - `length` (`float`): Length of the backbone (mm).
@@ -60,10 +62,11 @@ class ContinuumRobot(Sofa.Prefab):
         {'name': 'translation', 'type': 'Vec3d', 'help': 'Position of the base', 'default': [0.0, 0.0, 0.0]},
     ]
 
-    def __init__(self, pullPoints=None, *args, **kwargs):
+    def __init__(self, pullPoints=None, cableAngles=None, *args, **kwargs):
         Sofa.Prefab.__init__(self, *args, **kwargs)
 
         self._pullPoints = pullPoints
+        self._cableAngles = cableAngles
         self._addRequiredPlugins()
         positions = self._getBackbonePositions()
         self._addBackbone(positions)
@@ -129,7 +132,7 @@ class ContinuumRobot(Sofa.Prefab):
         diskIndices = self._getDiskIndices()
         self.cables = []
         for c in range(self.nbCables.value):
-            angle = 2. * pi * c / self.nbCables.value
+            angle = self._cableAngles[c] if self._cableAngles is not None else 2. * pi * c / self.nbCables.value
             # The disks are in the world XZ plane since the backbone hangs along -Y.
             # Same angle convention as the motors of Emio: [sin, 0, cos]
             offset = np.array([self.cableOffset.value * sin(angle), 0., self.cableOffset.value * cos(angle)])

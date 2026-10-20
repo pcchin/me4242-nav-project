@@ -1,11 +1,12 @@
-# Changelog — 2026-10-12
+# Changelog — 2026-10-12 to 2026-10-19
 
 Continuum robot for Emio: a cable-driven (tendon-driven) continuum robot driven by the four Emio servo motors, in place of the legs.
 
-> **Status: not yet tested.** The scenes run only inside the Emio Labs app, which bundles SOFA, so none of the changes below could be run while they were being written.
-> Open issues:
-> - **Robot "flying all over the place" in the simulation.** The likely main cause (over-constrained cables) and three other fixes have been added, but none has been checked yet. See [Stability](#stability).
-> - **Robot connection drops right after connecting, then SOFA crashed while loading a plugin.** The Emio Labs app's unpacked files in Temp were found damaged. See [Robot connection](#robot-connection).
+> **Status (2026-10-19):**
+> - **Robot connection:** solved. The robot is on COM10.
+> - **SOFA simulation:** stable in headless tests at rest, with pulls, with fast side switches, and in the angle and learned-IK modes. The "flying" seen in the GUI was most likely the slider setup, which has been fixed; to confirm in the GUI. See [Stability](#stability).
+> - **Learned inverse kinematics** (from 2026-10-19, see the [section further down](#2026-10-19-learned-inverse-kinematics)): works on the real robot, with the model about 1–3 mm from the measured tip. What limits it is the hardware: slack cables (small reach, about 4 mm repeatability) and a marker the camera loses when the tip bends toward +x/+z.
+> - **Next steps:** see the end of this file.
 
 ## Files
 
@@ -15,6 +16,8 @@ Continuum robot for Emio: a cable-driven (tendon-driven) continuum robot driven 
 | `v26.06.01/assets/emio/parts/controllers/cablecontroller.py` | New |
 | `v26.06.01/assets/labs/sandbox/continuum.py` | New |
 | `v26.06.01/assets/labs/sandbox/sandbox.md` | Modified |
+| `v26.06.01/assets/emio/parts/controllers/learnedik.py` | New (2026-10-19) |
+| `v26.06.01/assets/labs/sandbox/continuum_learning/` (`config.py`, `robot_io.py`, `collect_data.py`, `train_model.py`, `ik.py`, `goto.py`, `README.md`) | New (2026-10-19) |
 
 No existing Emio file (`leg.py`, `robot.py`, `motor.py`, `motorcontroller.py`, …) was changed.
 
@@ -182,3 +185,242 @@ Next steps if it still flies:
 
 While reviewing `emio/parts/leg.py` (unchanged), one possible bug was spotted:
 - **Crash on missing files:** lines 161–167 rotate the extremity frame even when `_checkData()` fails. In that case `extremity` has no mechanical state, so the constructor raises an exception instead of leaving `isValid()` to return `False`.
+
+---
+
+## 2026-10-19: learned inverse kinematics
+
+**Goal:** set a tip position and have the real robot go there directly. The material parameters are unknown, so the mapping is learned from the real robot with the depth camera, instead of the SOFA model.
+
+**Approach.** The 4 motor angles are redundant: many combinations reach the same tip position. A model trained directly on position → angles would average incompatible answers. So the scripts:
+- learn the **forward model** f: 4 angles → tip (x, y, z);
+- solve the inverse by **optimisation**: `argmin ‖W(f(θ) − p*)‖² + λ‖θ‖²`, plus a co-contraction penalty, within the angle limits. Among all solutions, this picks the one closest to rest, with no opposite cables wound against each other.
+
+**New folder `labs/sandbox/continuum_learning/`** (usage in its `README.md`):
+- `config.py`: shared settings (40 mm spool, motor directions, ±0.45 rad, 2 mm co-contraction limit, 600 mA current limit).
+- `robot_io.py`: the real robot (`EmioMotors` plus the `EmioCamera` tip marker, in scene coordinates), a made-up 4-cable robot for tests, and ramped motion with a current check.
+- `collect_data.py`: Sobol samples in the safe 4D region, visited in a short path order, with repeats and returns to rest. Writes a CSV row per sample and can resume after a stop.
+- `train_model.py`:
+  - compares a Gaussian process and an MLP on held-out data;
+  - checks whether y is controllable on its own;
+  - saves a portable `model.npz` (numpy only) and a report plot.
+- `ik.py`: `loadModel()` and `solveIK()`. Needs only numpy and scipy, so it also runs in SOFA's Python, which has no scikit-learn.
+- `goto.py`: moves the real robot to x, y, z and measures the error with the camera.
+
+**Python environment:** a new conda environment `emio-ml` (Python 3.10, `emioapi`, scikit-learn 1.7.2, scipy 1.15.3). The `me4242` environment had none of these packages.
+
+**SOFA integration:**
+- `CableMotorController`: new `inputMode="angles"`, where 4 independent motor angles drive the cables, with no pairing.
+- `emio/parts/controllers/learnedik.py`: new `LearnedIKController`.
+  - The target is set in the My Robot window. When it moves, the angles are solved (starting from the previous solution) and fed to `CableMotorController`.
+  - y is free by default (`controlY` to target it), because bending raises the tip.
+- `continuum.py`: new `--inputs angles` and `--model <npz>` options. A relative model path is resolved from the scene's folder.
+- `sandbox.md`: new buttons for angle inputs, the learned IK, and the README.
+
+**Tested without hardware (made-up robot, 839 samples):**
+
+| Check | Result |
+|---|---|
+| Forward model, Gaussian process (selected) | 0.18 mm mean test error |
+| Forward model, MLP | 1.97 mm mean test error |
+| IK, model error | 0.10 mm mean |
+| `goto.py`, reachable targets | 0.05 mm measured error |
+| `goto.py`, unreachable targets | Reported as out of reach; the robot goes to the closest point |
+| Safety limits | All samples and IK solutions within ±0.45 rad and the 2 mm co-contraction limit |
+| IK solve time | About 35 ms |
+
+SOFA headless runs (`runSofa -g batch`) were stable in both `--inputs angles` and `--model` modes. Not yet run on the real robot.
+
+**Next on the real robot:**
+- [ ] Calibrate the camera and put a marker on the tip.
+- [ ] Check `MOTOR_DIRECTIONS` with small angles, and mount the cables taut at 0 rad.
+- [ ] `collect_data.py --n 200`, train, and check a few targets with `goto.py`.
+- [ ] Collect the full set (about 1200 samples), retrain, and measure the error.
+
+**Fix (2026-10-19): `AttributeError: 'EmioMotors' object has no attribute 'currents'`.** `pip install emioapi` installs 0.2.0, the latest on PyPI, which has no motor current reading. Emio Labs bundles 0.3.0.
+- **Environment:** `emio-ml` now has 0.3.0 and `dynamixelmotorsapi`, copied from the app. 0.3.0 also matches the app's camera calibration.
+- **`robot_io.py`:** if the current reading is missing, it now warns and skips the over-current check instead of crashing.
+- **`collect_data.py`:** a data file holding only a header no longer gets a second header on resume.
+- **README:** setup instructions updated for 0.3.0.
+- **Follow-up:** reading the currents still failed in 0.3.0, because of a bug in Emio's `dynamixelmotorsapi`. Its `currents` property reads `MotorConfig.current_unit`, which doesn't exist. The app's copy has the same bug. `robot_io.py` now reads the raw `present_current` register (signed 16-bit, 2.69 mA per unit on the XM430). Checked on the robot: about 0 to 3 mA at rest.
+
+**First real data collection (2026-10-19): unusable, camera picked the wrong blobs.** 233 rows with the motors fine (≤ 134 mA, angles within 0.012 rad of the commands), but:
+- 197 rows were `not_settled`;
+- the tip readings were impossible (z = 120–180 mm, with 72 mm of noise);
+- the "rest" position drifted by 40 mm.
+
+The camera sees up to 18 blobs of the marker's colour (2.9 per frame on average), and the script took the first one. The real tip marker was steady at about (−2, −139, −5) mm. The camera calibration was fine: `~/.config/emioapi/camera_2d_points.csv` is loaded at start-up.
+
+Fix in `robot_io.py`:
+- At start-up, with the robot at rest, the static blob closest to the axis is the tip, and the other static blobs are background.
+- Detections outside the reachable region (`WORKSPACE_RADIUS`, `WORKSPACE_Y`) or near a background blob are ignored.
+- The tip is tracked as the detection closest to its last position (`MAX_JUMP`), and samples use the median of 10 frames.
+- New settings in `config.py`.
+
+Result: 0.2–0.4 mm noise at rest, and the tip is tracked through moves of each motor. The bad file was kept as `data/samples_BAD_wrong_marker_2026-10-19.csv`.
+
+Observations from that test (each motor at +0.15 rad):
+- **Motor 1's direction:** motors 0 and 2 winded (loaded) and motor 3 released (0 mA), all as configured. Motor 1 was loaded (43 mA) although `MOTOR_DIRECTIONS` says −1 (release). Likely `[1, 1, 1, -1]`; to confirm on the spool.
+- **Small motion:** only 5–10 mm of tip motion for 3 mm of cable, so the cables probably have slack at 0 rad.
+- **Hysteresis:** the robot came back about 4 mm from its starting point.
+
+**Second real collection (200 samples, 2026-10-19):** 194 `ok`, 33 `no_marker`, 6 `not_settled`.
+
+| Result | Value |
+|---|---|
+| Repeatability | median 3.95 mm, max 8.3 mm |
+| Forward model test error (GP) | 2.75 mm, at the data's noise floor |
+| Height y | Follows (x, z), so targets are (x, z) |
+| Reach | Only x −15…+36 mm, z −44…+26 mm |
+| Rest position drift | Up to 8 mm |
+
+- **Likely cause of the small reach, drift and scatter:** slack cables.
+- **Lost marker:** all 33 `no_marker` rows bent toward +x/+z, away from the camera at the −x/−z corner. The marker turns away from the camera or is hidden by the robot. `goto.py 0 nan 20` (edge of reach, +z) lost the marker the same way.
+- **To do:** move the marker so it's visible from all sides (the tip's bottom face, or a ball or ring), tension the cables at 0 rad, then collect again from scratch.
+- **`goto.py`:** after the move, it now searches for the marker at the model's predicted tip position instead of the starting one.
+
+**`goto.py` tests on the real robot (2026-10-19), with the 200-sample model:**
+
+| Target (x, y, z) | Result |
+|---|---|
+| A camera-side target | Measured, **0.91 mm** error |
+| `0 nan 20` and `0 -135 20` (toward +z) | `no marker seen`. y was ignored, because the model says y follows (x, z) |
+| `-10 nan -30` | Out of reach; the closest predicted point is (−2.5, −26.4), 8.3 mm away |
+
+- **Camera check at the +z pose:** the robot was moved to the `0 nan 20` angles and every detection was listed, unfiltered. The camera worked (122 frames in 4 s), but it only saw stray blobs around (−30, −50, 180) mm and nothing near the expected tip (0, −135, 20). So the marker is **physically hidden** when the tip bends away from the camera (−x/−z corner). The tracking isn't discarding it, and the camera isn't turning off.
+- **`-10 nan -30`:** measured at (−3.7, −26.1), only **about 1.2 mm from the model's prediction**. The 7.4 mm error to the target comes from the limited reach, not from the model.
+- **Why it's out of reach:** in the dry run, motor 3 sat at its **0.45 rad limit** (9 mm released). The reach is limited by `MAX_PULL` as well as by the slack cables.
+
+**Change to `goto.py`:** it now prints two errors, to the **target** and to the **prediction**. The first includes "can't reach"; the second shows how well the model knows the robot.
+
+**Status at the end of 2026-10-19:**
+- `data/samples.csv` (200 samples, slack cables, side-facing marker) and `models/model.npz` (GP, 2.75 mm test error) are the current data and model. `data/samples_BAD_wrong_marker_2026-10-19.csv` is the unusable first collection.
+- `config.py` is unchanged:
+  - `MOTOR_DIRECTIONS = [1, -1, 1, -1]`. The motion test suggested motor 1 is `+1` (loaded when its angle increases); **still to confirm on the spool.**
+  - `MAX_PULL = 9` mm, 40 mm spool, `MAX_COCONTRACTION = 2` mm, `MAX_CURRENT = 600` mA.
+- What's limiting accuracy is the hardware, not the model.
+
+**Next steps:**
+- [ ] Confirm motor 1's direction on its spool; set `MOTOR_DIRECTIONS = [1, 1, 1, -1]` if it winds on a positive angle.
+- [ ] Move the marker so the camera sees it in every bend (the tip's bottom face, or a ball or ring).
+- [ ] Tension the cables with all motors at 0 rad.
+- [ ] Optionally raise `MAX_PULL` (e.g. 14 mm) if the robot still bends too little, watching the currents.
+- [ ] Rename `data/samples.csv`, collect again from scratch, and retrain. Aim for `no_marker` ≈ 0, repeatability well below 4 mm, and a larger reach in `model_report.png`.
+- [ ] Choose `goto.py` targets inside the reach shown in `model_report.png`; check them with `--dry-run`.
+
+## 2026-10-21: plots of the data and the model
+
+**New script `continuum_learning/plot_model.py`.** Run `python plot_model.py`; it writes three PNGs to `models/`:
+- **`plot_motor_effects.png`:** tip x, y, z against each motor's angle. Data points, plus the model's average prediction as that motor sweeps its range with the others as in the data (partial dependence), plus the model with the others at 0.
+- **`plot_predicted_vs_measured.png`:** the same 80/20 split as `train_model.py`, with the model refitted on 80%. On 39 held-out samples: RMSE x 2.0, y 1.0, z 2.0 mm; mean 3D error 2.75 mm.
+- **`plot_workspace.png`:** measured tip positions seen from above (coloured by y), with the model's predicted grid of bends.
+
+**What the plots show** (200-sample data):
+- **Motor 1 winds on a positive angle:** its curve is flat for negative angles and rises for positive ones. This confirms `MOTOR_DIRECTIONS` should be `[1, 1, 1, -1]`.
+- **Motor 3 has almost no effect** over its whole range: cable 3 is very slack or loosely attached. That explains why the reach stops at about x = −15 mm.
+- **Every motor acts on one side only** (flat on the release side): the cables are slack.
+- **The workspace is a lopsided diagonal band** (x −15…+37, z −45…+30) instead of an area around the rest point. Causes: cable 3 not pulling, and the marker hidden on the +x/+z side.
+
+**Next steps (updated):** tension cable 3 in particular (and the others), set `MOTOR_DIRECTIONS = [1, 1, 1, -1]`, move the marker, collect again, then `train_model.py` and `plot_model.py`. Expect a roughly round workspace around the rest point, and motor curves that slope on both sides.
+
+## 2026-10-21: motor directions corrected, workspace shown in the simulation
+
+**Motor directions:** confirmed by the user that motors 1 and 3 wind on positive angles. Motors 0 and 2 were already seen winding on positive angles.
+- `MOTOR_DIRECTIONS = [1, 1, 1, 1]` in `continuum_learning/config.py` **and** `labs/sandbox/continuum.py`.
+- **Simulation:** the simulated cables 1 and 3 now wind when the real ones do. Before, they released, so the simulated robot bent the wrong way.
+- **Model retrained** on the same data (unchanged: GP, 2.75 mm), because the model file stores the directions for the co-contraction limit. The old model is kept as `models/model_old_directions.npz`.
+- **Finding:** with the old directions, **41 of the 233 samples wound both cables 1 and 3 at once** (up to 7.4 mm), with the motors pulling against each other. Harmless here: the cables were slack and the motors drew ≤ 108 mA. Future collections will block those poses properly. A few of those measured poses are now outside the co-contraction limit, which is why the IK check gives a 0.23 mm mean but a 0.08 mm 95th percentile.
+
+**Learned-IK scene (`continuum.py --model`):** two new displays.
+- **Workspace cloud** (light blue points): every tip position measured during data collection, i.e. what the robot can reach and the model knows.
+- **Green dot:** where the model predicts the **real** tip goes, updated by `LearnedIKController` (new optional `predictedNode` argument). It sits on the red target when the target is reachable, and at the closest reachable point otherwise.
+- **Headless test with the real model:** 193 workspace points; target (15, −20) reached by the prediction (green = red, 0.02 mm).
+
+**The simulated robot doesn't match the real one.** Same angles, target (15, −20):
+
+| | x | y | z |
+|---|---|---|---|
+| Predicted real tip | 15 | −137 | −20 |
+| SOFA tip | 47 | −177 | −53 |
+
+The SOFA robot bends much more, and it hangs at y = −195 at rest against −139 for the real marker: a **56 mm difference in height/length**. Its cables are taut, while the real ones are slack. Trust the green dot (the real robot), not the simulated robot.
+
+**Not yet applied:** the user says the robot can reach 2.5 rad. `MAX_PULL` is still 9 mm (0.45 rad).
+
+## 2026-10-21: simulation calibrated to the real robot, motor angles as inputs
+
+**Request:** make the simulation match the trained model; drive it from the motor angles instead of the cable lengths. Both were done.
+
+**Motor angles are now the default input:**
+- `continuum.py`: `--inputs angles` is the default; `--inputs pulls` keeps the cable-length mode.
+- `sandbox.md`: the main button drives the 4 motor angles; a second button keeps the cable-length mode.
+- `CableMotorController` in "angles" mode now rate-limits the **angles** (`maxStep / pulleyRadius` rad per step). The angles sent to the motors are exactly the rate-limited inputs; before, they were recomputed from the cable displacement.
+
+**New `continuum_learning/calibrate_sim.py`** fits, from the collected data (193 samples), a constant-curvature model of how each motor angle bends the robot:
+- per motor, a **slack** (rad turned before the cable pulls; negative = pre-tensioned at 0 rad) and a **gain** (how strongly the cable bends the robot);
+- each **cable's angle** around the axis;
+- the robot's **length** and **base position**.
+
+It saves `models/sim_calibration.json` and a plot. Fitted values:
+
+| Motor | Slack | Gain | Cable angle |
+|---|---|---|---|
+| 0 | −2.0 mm (−0.101 rad) | 0.18 | −19° |
+| 1 | +1.0 mm | 0.21 | 81° |
+| 2 | −2.9 mm | 0.25 | 160° |
+| 3 | +3.1 mm | 0.11 | 257° |
+
+- **Geometry:** length 192.6 mm (the user's 195 mm), base 54 mm above motor height, rest tip (0.3, −139, −1.1).
+- **Fit error:** 3.0 mm mean, 5.1 mm 95th percentile. Without fitting the cable angles it was 5.75 mm: the cable holes are rotated about 15–20° from the camera's axes.
+
+**SOFA uses the calibration** (`continuum.py --calibration`, default `continuum_learning/models/sim_calibration.json`; `none` turns it off):
+- `ContinuumRobot`: new `cableAngles` argument; the length and base come from the calibration;
+- `CableMotorController`: new `slack` and `gain`. The simulated cable displacement is `gain * r * (direction * angle - slack)`.
+
+**Simulation fix:** two opposite cables both pulling (pre-tension, or both motors winding) made SOFA diverge right away (tip at 10⁷⁰ mm). The controller now removes their common part, so at most one cable per opposite pair is active. Only the difference bends the robot, as in the calibration model.
+
+**Checked in headless SOFA** by replaying all 193 measured angle sets in the calibrated scene: stable, and the tip is **4.2 mm mean / 3.9 mm median / 9.0 mm 95th percentile** from the measured tip, about the real robot's own repeatability (about 4 mm). Learned-IK scene, target (15, −20): the simulated tip is 5 mm from the model's prediction, against about 55 mm before calibration.
+
+**Drag the target (2026-10-21).** In the learned-IK scene (`continuum.py --model`), the target is now dragged in the 3D view instead of set with sliders.
+- **Target:** the `Target` node is a Rigid3 frame (EulerImplicit + CG + `MechanicalObject`, the same setup as the labs' targets), with a red dot. It's given to the GUI with `MyGui.setIPController(Target, TCP, ConstraintSolver)`; `setIPController` accepts any constraint solver, checked with the bundled SofaImGui. That gives a draggable target in the 3D view, plus the TCP controls in the Move window (`setTCPLimits(-80, 80, -π, π)`).
+- **TCP frame:** a new `TCP` node follows the model's predicted real tip, as does the green dot.
+- **Sliders removed:** the My Robot target sliders are gone.
+- **`LearnedIKController`:** reads the target from `targetNode`'s position (Vec3 or Rigid3), with no more `targetX/Y/Z` data or `initialTarget`. `predictedNode` became `predictedNodes` (a list).
+- **Headless test:** moving the target to (15, −20) gave predicted, green dot and TCP at (15, −136.9, −20), with the calibrated simulated tip at (10.3, −137.1, −21.9). The drag handle itself can only be checked in the GUI.
+- **Correction:** Emio's docs only describe moving the TCP target with the **Move window's TCP controls**. Dragging in the 3D view is unconfirmed (the GUI couldn't be run here). The Sandbox page and the `continuum.py` docstring now say "TCP controls of the Move window". Possible next step: give the target a small collision sphere so SOFA's standard Shift + left-click drag can move it (not done yet).
+
+**Grab the target with the mouse (2026-10-21).** In the learned-IK scene, **Shift + left-click and drag** on the red target sphere moves the target, and the robot follows.
+- **The target is now a simulated body:** 1 g, Euler implicit with heavy damping (`rayleighMass=20`), `SparseLDLSolver` and `GenericConstraintCorrection`, and gravity cancelled by an equal `ConstantForceField`. It has a `SphereCollisionModel` (radius 6 mm) on its red dot, so SOFA's mouse (`AttachBodyButtonSetting`, stiffness 10) can pick it. There's no collision pipeline, so the sphere collides with nothing; the scene check warns about that, which is expected.
+- **Approaches that failed, found with a headless test** (a spring of stiffness 10 pulling the sphere toward a "mouse" point, then released):
+  - the labs' massless target with no constraint correction: the force reached the target, but `FreeMotionAnimationLoop` never moved it;
+  - a controller moving the target by force ÷ stiffness: it oscillated, because the loop restarts from the free position;
+  - setting `gravity` on the target's node: it had no effect, and the target sank after the release.
+- **Final result:**
+  - the target reaches the mouse point (15, −20) in about 5–20 steps;
+  - the IK follows (predicted 15.1, −136.9, −20.1) and the simulated tip moves to (10.4, −22.0);
+  - after release, the target stays exactly in place;
+  - setting the target directly, as the Move window's TCP controls do, still works.
+- The Sandbox page now mentions Shift + drag. Dragging with the real mouse in the GUI is still to be confirmed by the user.
+- **Mouse grab, follow-up:** in the GUI, Shift + click created SOFA's mouse objects, but they failed with `Invalid vOp operation 1 (null(V_DERIV) ...)` on `MechanicalObject(MousePosition)` and `(MappedMousePosition)`, so nothing moved. The spring-based `AttachBodyButtonSetting` (added by Emio's `addHeader`) doesn't work with the `FreeMotionAnimationLoop`. `continuum.py` now removes it and adds the constraint-based **`ConstraintAttachButtonSetting`** (`button="Left"`), which this SOFA build has (checked headless). The target and the robot both have `GenericConstraintCorrection`. The scene loads and runs; the grab is still to be confirmed in the GUI.
+- **Mouse grab, follow-up 2:** with `ConstraintAttachButtonSetting` the user could grab, but grabbed "some other pink dot" instead of the red dot. The grab sphere was drawn in see-through red (pinkish) and the red dot was drawn separately on top of it. The red dot now **is** the grab sphere (`SphereCollisionModel`, radius 5 mm, solid red), and the separate point drawing is removed, so what you see is what you grab. The sphere is the scene's only collision model, so nothing else can be picked. Headless drag test: still fine (target at the "mouse" point (15, −20) by step 20, stays after release). The GUI check is pending.
+
+**Mouse grab cancelled (2026-10-21, user's choice).** The user will move the target with the Move window's TCP sliders. Reverted in `continuum.py`:
+- the target is back to the labs' setup: Rigid3 frame, `EulerImplicitSolver(firstOrder)` + `CGLinearSolver`, no mass, no `ConstantForceField`, no constraint correction;
+- the red dot is a plain point again: no `SphereCollisionModel`;
+- `AttachBodyButtonSetting` from `addHeader` is no longer replaced by `ConstraintAttachButtonSetting`;
+- the extra plugins (Collision.Geometry, Mass, MechanicalLoad) are removed.
+
+Kept: `setIPController(Target, TCP, ConstraintSolver)` and `setTCPLimits(-80, 80, -π, π)` for the TCP sliders, the green predicted-tip dot, and the workspace cloud. The Sandbox page and the `LearnedIKController` docstring no longer mention the mouse. This target setup was tested headless before the mouse work: setting the target directly, as the sliders do, drives the IK and the robot. It couldn't be rerun now because Emio Labs (and its bundled SOFA) wasn't running. Syntax checked.
+
+**Target sliders restored (2026-10-21).** The user couldn't find a slider in the learned-IK scene: the My Robot target sliders had been removed for the mouse grab, and the Move window's TCP controls (`setIPController`) may not show up with this scene's non-inverse solver (every Emio lab pairs them with the QP inverse solver).
+- **Sliders back:** `LearnedIKController` has `targetX/Y/Z` again, shown in **My Robot → Target** (`addSettingInGroup`, rest position ± 80 mm). They're synced both ways with the `Target` node (`syncSliders()`): a moved slider moves the target, and a target moved some other way (TCP controls, scene graph) moves the sliders.
+- **TCP controls kept:** the `setIPController` hookup stays, in case the GUI shows them.
+- **Headless test:** sliders to (15, −20) → target, prediction (15, −20), simulated tip (10.3, −21.9). Target node moved to (−5, 10) → sliders followed, prediction (−5, 10), simulated tip (−3.3, 13.4).
+
+**WASD keyboard control (2026-10-21).** `LearnedIKController.onKeypressedEvent`:
+- **W / S** move the target ±z, **A / D** move it ∓x / ±x, by `keyStep` = 2 mm per press; **R** resets it to the initial (rest) position;
+- both lowercase and uppercase keys work;
+- the sliders follow through `syncSliders()`.
+
+SofaGLFW (Emio's GUI) forwards keys to the scene as `KeypressedEvent` (seen in the binary). As in other SOFA GUIs, this usually needs **Ctrl** held, with the 3D view focused; to be confirmed by the user. Headless test (key events sent to the controller): W×5 → z +10 mm, D×5 → x +10 mm, R → back to rest; the sliders, the prediction and the simulated tip followed. The Sandbox page mentions Ctrl + W/A/S/D.
+- **Keyboard follow-up:** `onKeypressedEvent` got no keys in the GUI ("no response"), with or without Ctrl. Replaced by a `Keyboard` class in `learnedik.py` that reads the key state from Windows (`GetAsyncKeyState`) each step, only while the **SOFA window is the active window** (the foreground window belongs to the SOFA process), so typing elsewhere doesn't move the robot. Requested remap: **W / S → +x / −x, A / D → −z / +z**; **R** resets. **Holding** a key moves the target smoothly at `keySpeed` = 20 mm/s (sim time). While a key is held, the IK re-solves every `solveDistance` = 1 mm (each solve takes ≈35 ms), and once more on release. Headless test with a fake keyboard: W held 0.5 s → x +10 mm; D held 0.5 s → z +10 mm; R → rest; the sliders, the prediction and the simulated tip followed, and the prediction ends exactly on the target. The real Windows reader runs inside SOFA's Python (it reported "SOFA window not active" during the test, as expected). Typing W/A/S/D/R in a GUI text field also moves the target.
