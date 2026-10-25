@@ -68,6 +68,7 @@ def main():
     p0 = np.concatenate([[0.1] * 4, [0.5] * 4, [-rest[1]], [rest[0], 0., rest[2]], NOMINAL_CABLE_ANGLES])
     low = np.concatenate([[-0.2] * 4, [0.02] * 4, [60.], [-30., -100., -30.], NOMINAL_CABLE_ANGLES - np.pi / 2])
     high = np.concatenate([[2.5] * 4, [3.] * 4, [300.], [30., 100., 30.], NOMINAL_CABLE_ANGLES + np.pi / 2])
+    p0 = np.clip(p0, low + 1e-6, high - 1e-6)  # the "rest" sample may be a bent pose when no rest pose was measured
 
     def residuals(p):
         return (tipPositions(theta, unpack(p)) - xyz).ravel()
@@ -96,7 +97,8 @@ def main():
                    "cable_angles_rad": params["cable_angles"].tolist(),
                    "cable_offset": CABLE_OFFSET, "pulley_radius": config.PULLEY_RADIUS,
                    "directions": config.MOTOR_DIRECTIONS.tolist(),
-                   "error_mean_mm": float(errors.mean()), "n_samples": int(len(xyz))}
+                   "error_mean_mm": float(errors.mean()), "n_samples": int(len(xyz)),
+                   "max_theta": float(np.abs(theta).max())}  # angle range of the data: trust the fit up to there
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(calibration, f, indent=2)

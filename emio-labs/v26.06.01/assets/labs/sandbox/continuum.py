@@ -33,7 +33,8 @@ WIRE_YOUNG_MODULUS = 2.0e8  # spring steel ~200 GPa (nitinol ~5.0e7)
 WIRE_MASS_DENSITY = 7.85e-6  # spring steel (nitinol ~6.45e-6)
 MOTOR_DIRECTIONS = [1., 1., 1., 1.]  # sign of the motor rotation that winds each cable (all wind when positive)
 MOTORS_DISTANCE = 100.  # mm, distance from the motors to the center (same as Emio)
-MAX_PULL = 9.  # mm, limit of the cable inputs (~1.5 x CABLE_OFFSET, about 90 degrees of bending)
+MAX_PULL = 20.  # mm, limit of the cable inputs (1 rad on the 20 mm radius spool)
+KEY_BEND_SPEED = 0.3  # rad/s, bending speed while a W/A/S/D key is held (--inputs keys)
 
 
 def getParserArgs():
@@ -44,8 +45,9 @@ def getParserArgs():
                                      description='Simulate Emio as a cable-driven continuum robot.')
     parser.add_argument('--no-connection', dest="connection", action='store_false',
                         help="use when you want to run the simulation without the robot")
-    parser.add_argument('--inputs', choices=["pulls", "angles"], default="angles",
-                        help="inputs of the Move window: motor angles (rad) or cable pulled lengths (mm)")
+    parser.add_argument('--inputs', choices=["pulls", "angles", "keys"], default="angles",
+                        help="inputs: motor angles (rad) or cable pulled lengths (mm) in the Move window, or "
+                             "'keys': bend the robot directly with W/A/S/D (plus the angle sliders)")
     parser.add_argument('--model', default=None,
                         help="learned model (model.npz): drive the robot to a target position with the learned IK")
     parser.add_argument('--calibration', default="continuum_learning/models/sim_calibration.json",
@@ -115,13 +117,20 @@ def createScene(rootnode):
     simulation.addChild(robot)
 
     # Inputs (cable pulls in mm, or motor angles in rad) -> cables in simulation and motor angles (rad)
-    inputMode = "angles" if args.model else args.inputs
+    inputMode = "angles" if args.model or args.inputs == "keys" else args.inputs
     controller = rootnode.addObject(CableMotorController(robot.cables,
                                                          pulleyRadius=PULLEY_RADIUS,
                                                          directions=MOTOR_DIRECTIONS,
                                                          inputMode=inputMode,
                                                          slack=calibration["slack_rad"] if calibration else None,
                                                          gain=calibration["gain"] if calibration else None))
+
+    # Direct keyboard control (no model): W/S bend toward +x/-x, A/D toward -z/+z, R straightens
+    keyBend = None
+    if args.inputs == "keys" and not args.model:
+        from emio.parts.controllers.learnedik import KeyboardBendController
+        keyBend = rootnode.addObject(KeyboardBendController(controller, maxTheta=MAX_PULL / PULLEY_RADIUS,
+                                                            speed=KEY_BEND_SPEED))
 
     # Learned inverse kinematics: target position -> 4 motor angles
     learnedIK = None
@@ -179,6 +188,9 @@ def createScene(rootnode):
             if inputMode == "angles":
                 MyGui.MoveWindow.setActuatorsDescription("Motors angle (rad)")
                 MyGui.MoveWindow.setActuatorsLimits(-MAX_PULL / PULLEY_RADIUS, MAX_PULL / PULLEY_RADIUS)
+                if keyBend is not None:
+                    MyGui.SimulationState.addData("Keyboard bend", "toward +x (rad)", keyBend.bendX)
+                    MyGui.SimulationState.addData("Keyboard bend", "toward +z (rad)", keyBend.bendZ)
             else:
                 MyGui.MoveWindow.setActuatorsDescription("Cables pulled length (mm)")
                 MyGui.MoveWindow.setActuatorsLimits(0., MAX_PULL)

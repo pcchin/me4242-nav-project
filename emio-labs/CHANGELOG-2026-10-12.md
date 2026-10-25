@@ -424,3 +424,91 @@ Kept: `setIPController(Target, TCP, ConstraintSolver)` and `setTCPLimits(-80, 80
 
 SofaGLFW (Emio's GUI) forwards keys to the scene as `KeypressedEvent` (seen in the binary). As in other SOFA GUIs, this usually needs **Ctrl** held, with the 3D view focused; to be confirmed by the user. Headless test (key events sent to the controller): W×5 → z +10 mm, D×5 → x +10 mm, R → back to rest; the sliders, the prediction and the simulated tip followed. The Sandbox page mentions Ctrl + W/A/S/D.
 - **Keyboard follow-up:** `onKeypressedEvent` got no keys in the GUI ("no response"), with or without Ctrl. Replaced by a `Keyboard` class in `learnedik.py` that reads the key state from Windows (`GetAsyncKeyState`) each step, only while the **SOFA window is the active window** (the foreground window belongs to the SOFA process), so typing elsewhere doesn't move the robot. Requested remap: **W / S → +x / −x, A / D → −z / +z**; **R** resets. **Holding** a key moves the target smoothly at `keySpeed` = 20 mm/s (sim time). While a key is held, the IK re-solves every `solveDistance` = 1 mm (each solve takes ≈35 ms), and once more on release. Headless test with a fake keyboard: W held 0.5 s → x +10 mm; D held 0.5 s → z +10 mm; R → rest; the sliders, the prediction and the simulated tip followed, and the prediction ends exactly on the target. The real Windows reader runs inside SOFA's Python (it reported "SOFA window not active" during the test, as expected). Typing W/A/S/D/R in a GUI text field also moves the target.
+
+## 2026-10-23: full-range collection (2.5 rad) went wrong, tracking fixed
+
+**What the user did:** set `MAX_PULL = 50` mm (2.5 rad) in `config.py` and `continuum.py`, then ran `collect_data.py` (1200 samples).
+- The resume logic treated the 233 rows of the earlier 200-sample run in `data/samples.csv` as steps of the *new* plan, so the file now holds the old ±0.45 rad data (rows 0–232) followed by the new ±2.5 rad data.
+- From row ~588, almost every reading sat at **(−34, −55, 163) mm** whatever the angles, marked `not_settled`: the tracker had locked onto a stray green blob once the tip marker went out of view at large bends. A second stray point at (−25, −171, −22) was found too (below the robot's lowest reach).
+- **152 of the "ok" large-angle readings are physically impossible:** farther from the robot's base than its 193 mm length. The 56 that remain are about 96 mm from the physics prediction. **No reliable large-angle data;** the original 193 samples are still good.
+- Motor 0 hit the 600 mA limit (605–619 mA) at large angles, so those samples were skipped.
+
+**Fixes:**
+- `robot_io.py`:
+  - shared `pickTip()` filter: reach sphere, background blobs, prediction gate (`PREDICTION_GATE` 40 mm), then nearest to the last tip (`MAX_JUMP`);
+  - `setPrediction()`, `setReach()`, and `refreshTracking()` (re-find the tip at rest and add new static blobs to the background);
+  - `FakeRobot(hideBeyond=…, strayBlob=…)` reproduces the lost-tip/stray-blob problem.
+- `collect_data.py`:
+  - tracks the tip near the **calibrated physics prediction** (`sim_calibration.json`), but only for angles within the calibration's data range (`max_theta` + 0.1); beyond that the gate is off;
+  - **reach check** (base, length + 10 mm);
+  - `StuckDetector`: the measured tip moves < 2 mm over 5 samples while the predicted tip moves > 15 mm → `tracking_lost` until the next rest pose; at each rest pose, wait to settle and `refreshTracking()`;
+  - `--max-theta` for staged collection;
+  - new columns `max_theta` and `plan`; it **refuses to resume in a file of another plan**;
+  - `--calibration`, `--simulate-trap`.
+- `config.py`: `SETTLE_TIMEOUT` 3 → 5 s, `SETTLE_TOLERANCE` 0.2 → 0.4 mm, plus the new tracking constants.
+- `train_model.py`: the model's `max_theta` = the largest |angle| in the data (min with `MAX_THETA`), so the IK never extrapolates.
+- `calibrate_sim.py`: saves `max_theta` (the data's angle range).
+- New `clean_data.py`: writes a cleaned copy with only good, non-stuck, reachable samples. Stuck readings are found with the physics model, so slack-cable samples (really still, and predicted still) are kept. On a snapshot of `samples.csv`: 2 stuck points (375 rows), 332 rows out of reach; **249 kept** (all 193 old + 56 doubtful large-angle).
+
+**Tests (made-up robot):**
+- With the camera trap (tip hidden beyond a 1.5 rad bend, stray blob at (−34, −55, 163)): no reading ever at the stray blob; `ok` readings within 0.28 mm of the true tip.
+- Same with the prediction gate off.
+- `StuckDetector` flags a still reading with a moving prediction after 5 samples, and doesn't flag a really still robot or a moving tip.
+- Resume guard refuses a file of another plan.
+- All edited files compile.
+
+**Next:** stop the running collection; fix the marker so the camera sees it at large bends (and check the robot isn't physically caught); collect **in stages** (1.0 → 1.5 → 2.5 rad) with `clean_data.py` and `calibrate_sim.py` after each stage. The README has the commands.
+- **Limit lowered to 2 rad (user's choice, 2026-10-23):** `MAX_PULL = 40` mm (2 rad on the 20 mm radius spool) in `continuum_learning/config.py` and `continuum.py`, so `MAX_THETA = 2.0` rad. The angle sliders, `collect_data.py` (default `--max-theta`), the IK cap and `clean_data.py` all follow. Staged collection: 1.0 → 1.5 → 2.0 rad.
+- **Limit lowered to 1 rad (user's choice, 2026-10-23: "1 rad is enough"):** `MAX_PULL = 20` mm (1 rad on the 20 mm radius spool) in `config.py` and `continuum.py`; no staged collection needed. README section 2 rewritten: one collection (`collect_data.py --n 200 --out data/run1.csv`, then `clean_data.py`); more data = another `--seed` and a new file; train on all clean files together. The old 2b commands (default `data/samples.csv`, now refused by the plan guard) were removed.
+
+## 2026-10-23: first 1 rad collection (`data/stage1.csv`) and what it showed
+
+**Data:** 233 rows (plan seed0_n200_r30_max1): 107 `ok`, 122 `no_marker`, 4 `not_settled`; no stuck readings; motor currents ≤ 406 mA. `clean_data.py` → `stage1_clean.csv`: 107 samples. The tip now reaches x −82…75, z −43…127 mm and rises to y −25 mm, much bigger bends than before.
+
+**Two bugs found in the new tracking (fixed):**
+- **Reach check too tight:** the old calibration (base y = 53.6, length 193) allowed at most 202.6 mm from the base. The marker now sits lower (rest around y −149), so readings near rest were cut off as out of reach. The kept readings piled up just under the limit (max 202.4 mm). This removed the near-rest samples, including all 26 samples within the gated range and every rest pose. `REACH_MARGIN` 10 → **30 mm** in `collect_data.py` and `clean_data.py` (the stray blob at 227 mm is still rejected).
+- **Outdated calibration:** `collect_data.py` now checks at start-up that the tip found at rest is within `PREDICTION_GATE/2` of the calibration's predicted rest tip; if not, it warns and turns off the prediction gate.
+
+**Marker still hidden by bend direction** (gate off): no_marker 24 % toward −x/−z (the camera side), 40 % toward +x/−z, 53 % toward +x/+z, 72 % toward −x/+z. This is physical: the marker needs to be visible from all sides.
+
+**Results:**
+- `train_model.py` on `stage1_clean.csv`: **repeatability median 23.6 mm** (9 repeats; the motors return to the same angles within 0.003–0.03 rad, but the tip lands up to 32 mm apart, mostly with less bend on the 2nd visit at the end of the run). Test error 13.3 mm (GP); y follows (x, z); IK limited to 1.0 rad. Saved as `models/model.npz` (the previous file is `model_before_stage1.npz`).
+- `calibrate_sim.py` (after a fix: the initial guess is clipped into the bounds, as there's no rest reading): **poor fit, 27.6 mm** (gain 1.29, length 143 mm). It was moved to `sim_calibration_stage1_poorfit.json`, and the previous calibration (3.0 mm on the old data) was restored as `sim_calibration.json`.
+- Per-third linear fits of the tip against the angles vary (e.g. motor 2: −56 / −31 / −39 mm per rad), so drift vs. hysteresis isn't settled.
+
+**Conclusion:** at ±1 rad the robot isn't repeatable (about 24 mm), from cable friction or hysteresis, and/or cable slip or stretch over the run. No model can do better than that. Next: check the cables physically (slipping on the spools, stretch, friction in the disk holes), test repeatability directly (the same `goto.py` target several times), and make the marker visible from all sides.
+
+## 2026-10-26: direct WASD steering without the model
+
+**Request:** control the end effector with WASD by eye, without the collected data or the model.
+
+- **New `KeyboardBendController`** (`emio/parts/controllers/learnedik.py`, reusing the Windows `Keyboard` reader; the SOFA window must be active):
+  - **W / S:** motor 1 winds and motor 3 releases by the same angle (or the reverse), so the tip bends toward +x / −x;
+  - **D / A:** the same with motors 0 / 2, toward +z / −z;
+  - **R:** all motors back to 0.
+  - Opposite cables work in pairs (user's choice), so they never fight. The bend speed is **0.3 rad/s** (user's choice, `KEY_BEND_SPEED` in `continuum.py`). Each motor is clamped to ±`MAX_PULL/PULLEY_RADIUS` = ±1 rad. It writes the `CableMotorController` angle inputs only while a key is held, and reads the current angles first, so the Move window's angle sliders can be mixed with the keys.
+  - Outputs `bendX` / `bendZ`, shown in Simulation State.
+- **`continuum.py`:** `--inputs keys` (the angle mode underneath, plus the keyboard controller); the real robot follows through `MotorController` when connected.
+- **`sandbox.md`:** a new button for it.
+- **Tested:** logic with a Sofa stand-in (W 1 s → x 0.3 rad on motors 1/3; D 2 s → z 0.6 on motors 0/2; holds on release; continues from slider changes; clamps at ±1 rad; R resets). The SOFA headless run wasn't possible: the app's unpacked SOFA Python lost its standard library (`resources/sofa/bin/python/Lib` holds only `site-packages`), likely Windows temp cleanup again. Restart Emio Labs before using the scenes.
+- **Note:** `collect_data.py`'s tracking-streak fix (see the saved plan) is **not** done yet.
+
+## 2026-10-26: `teleop.py`, steering by eye from the terminal (no SOFA)
+
+**Why:** the user wants to steer the real robot blindly with W/A/S/D, without data, camera, model or SOFA. In the SOFA scene, connecting failed repeatedly ("Could not find or connect"), while a direct connection to the robot (now on **COM12**, adapter FT9BTLU1; four different FTDI adapters seen on COM9–12) works: all 4 motors answer.
+
+**New:**
+- `robot_io.EmioMotorsOnly(port)`: the motors without the camera (`angles`, `currents` via the raw-register fallback, `close()`).
+- `continuum_learning/teleop.py`:
+  - **W / S** = motor 1 winds and motor 3 releases (or the reverse), toward +x / −x; **D / A** = motors 0 / 2, toward +z / −z; **R** straightens; **Q** / Ctrl+C straightens and releases the motors.
+  - Opposite cables in pairs; 0.3 rad/s while held (`--speed`; Windows key repeat ≈ 30 events/s, `speed/30` rad per event); each motor clamped to ±`MAX_THETA` (1 rad).
+  - Motor currents checked every step: above `MAX_CURRENT` (600 mA, `--max-current`), the step is undone and the key ignored until released.
+  - Ramp to straight at start and on exit; status line with the bend, angles and currents.
+  - Keys are read with `msvcrt`, so only while that terminal has focus.
+  - `--simulate` and `--script "W*30,D*60,R,Q"` for testing.
+- README: a "Steer by eye" section.
+
+**Tests (made-up robot, scripted keys):** W ×40 → bend x 0.40; D ×80 → z 0.80; S ×400 → x clamps at −1.00; R → straight; Q → released. Over-current at 150 mA: the bend stops at 0.49 rad, the warning prints once and the step is undone. The pure functions (`applyKey`, `anglesFromBend`, `bendFromAngles`) are right. The real terminal key reader loads. Not yet run on the real robot.
+- **`teleop.py` limit and speed (2026-10-26, user's request):** angle limit **±2.5 rad** (`MAX_THETA` in `teleop.py`, `--max-theta`) and speed **0.5 rad/s** (`SPEED`, `--speed`), for steering by eye only. Data collection and the model tools keep `config.MAX_THETA` = 1 rad. The start-up message shows the limit and speed. Simulated test: W held → 2.50 (clamped), D ×60 → 1.00, S → −2.50. The 600 mA current check still applies; at large angles motor 0 reached ~605–620 mA during the earlier 2.5 rad collection, so steps may be undone near full bend.
+- **`teleop.py` current limit (2026-10-26, user's request):** raised from 600 to **900 mA** (`MAX_CURRENT` in `teleop.py`, `--max-current`); the XM430-W210 stalls at about 1.3 A. Data collection keeps `config.MAX_CURRENT` = 600 mA. The start-up message shows it. Simulated check: the limit is still enforced (`--max-current 400` → step undone with a warning).
+- **`teleop.py` current limit raised again (user's request):** **1200 mA**, just under the XM430-W210 stall current (about 1300 mA); a higher value would never trigger. Data collection stays at 600 mA.

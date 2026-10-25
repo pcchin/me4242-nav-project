@@ -136,7 +136,11 @@ def main():
     print(f"Height y beyond what (x, z) imposes: {residual:.2f} mm -> y "
           f"{'IS controllable: targets are (x, y, z)' if yFree else 'follows (x, z): targets are (x, z)'}")
 
-    meta.update({"lam": LAM, "max_theta": config.MAX_THETA, "max_cocontraction": config.MAX_COCONTRACTION,
+    # The IK must not use angles beyond what the data covers (the model can't extrapolate)
+    dataMaxTheta = float(min(config.MAX_THETA, np.abs(x).max()))
+    print(f"Angles in the data up to {dataMaxTheta:.2f} rad: the IK is limited to that "
+          f"(motor limit {config.MAX_THETA:.2f} rad)")
+    meta.update({"lam": LAM, "max_theta": dataMaxTheta, "max_cocontraction": config.MAX_COCONTRACTION,
                  "pulley_radius": config.PULLEY_RADIUS, "pairs": config.OPPOSITE_PAIRS, "y_controllable": yFree,
                  "y_residual_mm": residual, "repeatability_mm": noise, "n_samples": int(len(x)),
                  "test_error_mean_mm": float(min(r[0] for r in results))})
