@@ -170,7 +170,7 @@ class ContinuumRobot(Sofa.Prefab):
 def createScene(rootnode):
     from emio.utils.header import addHeader, addSolvers
     from splib3.animation import AnimationManager, animate
-    from emio.parts.controllers.cablecontroller import setCableDisplacement
+    from cablecontroller import setCableDisplacement
     """
     Test the simulation of a continuum robot: the cables are pulled one after the other.
     """

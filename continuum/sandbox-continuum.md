@@ -32,4 +32,4 @@ Go to a target tip position with the learned inverse kinematics. Train the model
 
 Test the continuum robot alone, without Emio (the cables are pulled one after the other):
 
-#runsofa-button(file="assets/emio/parts/continuumrobot.py")
+#runsofa-button(file="assets/labs/sandbox-continuum/continuumrobot.py")

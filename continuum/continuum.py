@@ -126,7 +126,7 @@ def createScene(rootnode):
     # Learned inverse kinematics: target position -> 4 motor angles
     learnedIK = None
     if args.model:
-        from emio.parts.controllers.learnedik import LearnedIKController
+        from learnedik import LearnedIKController
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "continuum_learning"))
         import ik
         modelPath = args.model if os.path.isabs(args.model) else os.path.join(os.path.dirname(os.path.abspath(__file__)),
