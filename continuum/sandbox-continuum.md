@@ -20,6 +20,10 @@ If a simulation calibration exists (`continuum_learning/calibrate_sim.py`), the 
 
 #open-button(file="assets/labs/sandbox-continuum/continuum.py")
 
+Steer the robot directly with the keyboard, by eye (no camera or trained model needed). With the SOFA window active, hold **W / S** to bend toward +x / -x, **D / A** toward +z / -z, **R** to straighten:
+
+#runsofa-button(file="assets/labs/sandbox-continuum/continuum.py", pyargs=["--inputs", "keys"])
+
 Drive the robot with the pulled length of each cable (mm) instead, opposite cables working in pairs:
 
 #runsofa-button(file="assets/labs/sandbox-continuum/continuum.py", pyargs=["--inputs", "pulls"])

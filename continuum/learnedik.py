@@ -35,10 +35,61 @@ class Keyboard:
         return [k for k in keys if self.isDown(k)]
 
 
+class KeyboardBendController(Sofa.Core.Controller):
+    """
+    Bends the continuum robot directly with the keyboard, without any model: you steer by eye.
+    While the SOFA window is active, hold:
+        - W / S: wind cable 1 and release cable 3 (or the reverse): the tip bends toward +x / -x,
+        - D / A: wind cable 0 and release cable 2 (or the reverse): the tip bends toward +z / -z,
+        - R: all motors back to 0 (straight).
+    Opposite cables work in pairs (one winds, the other releases by the same angle), so they never fight.
+    The bend changes at `speed` rad/s and stays where it is when you let go; each motor stays within +-`maxTheta`.
+
+    It writes the 4 motor angles to the inputs of a `CableMotorController` in "angles" mode (which moves the simulated
+    cables and feeds the `MotorController` of the real robot), only while a key is held: the Move window's angle
+    sliders keep working too.
+
+    Outputs: `bendX`, `bendZ` (rad), the current bend toward +x and +z.
+    """
+
+    PAIRS = {"x": (1, 3), "z": (0, 2)}  # (cable winding toward +, cable winding toward -)
+    KEYS = {"W": ("x", 1.), "S": ("x", -1.), "D": ("z", 1.), "A": ("z", -1.)}
+
+    def __init__(self, cableController, maxTheta, speed=0.3, *args, **kwargs):
+        Sofa.Core.Controller.__init__(self, *args, **kwargs)
+        self.name = "KeyboardBendController"
+        self.cableController = cableController
+        self.maxTheta = maxTheta
+        self.speed = speed
+        self.keyboard = Keyboard()
+        self.addData(name="bendX", type="float", value=0., help="Bend toward +x (rad)", group="Outputs")
+        self.addData(name="bendZ", type="float", value=0., help="Bend toward +z (rad)", group="Outputs")
+
+    def onAnimateBeginEvent(self, event):
+        keys = self.keyboard.pressed(list(self.KEYS) + ["R"])
+        if not keys:
+            return
+        inputs = [float(d.value[0]) for d in self.cableController.inputs]
+        # Current bend of each pair, from the motor angles (so that the sliders and the keys can be mixed)
+        bend = {axis: (inputs[plus] - inputs[minus]) / 2. for axis, (plus, minus) in self.PAIRS.items()}
+        if "R" in keys:
+            bend = {"x": 0., "z": 0.}
+        else:
+            dt = self.getContext().dt.value
+            for key in keys:
+                if key in self.KEYS:
+                    axis, direction = self.KEYS[key]
+                    bend[axis] = max(-self.maxTheta, min(self.maxTheta, bend[axis] + direction * self.speed * dt))
+        for axis, (plus, minus) in self.PAIRS.items():
+            self.cableController.inputs[plus].value = [bend[axis]]
+            self.cableController.inputs[minus].value = [-bend[axis]]
+        self.bendX.value, self.bendZ.value = bend["x"], bend["z"]
+
+
 class LearnedIKController(Sofa.Core.Controller):
     """
     Drives the 4 motors of the continuum robot to a target tip position with a learned inverse kinematics
-    (see `labs/sandbox/continuum_learning`).
+    (see `labs/sandbox-continuum/continuum_learning`).
 
     The target is the position of `targetNode`'s `MechanicalObject` (mm, scene frame of Emio). Move it with:
         - the keyboard, while the SOFA window is active: hold W / S to move it along +x / -x, A / D along -z / +z

@@ -16,6 +16,29 @@ class OverCurrentError(RuntimeError):
     pass
 
 
+def pickTip(candidates, background, lastTip, prediction=None, reach=None):
+    """
+    Which detection (n, 3) is the tip marker, or None:
+        - detections farther from the robot's base than it can reach (`reach` = (base, radius)) are ignored,
+        - detections close to a static background blob are ignored,
+        - if the tip is predicted, only detections within PREDICTION_GATE of the prediction are kept,
+        - the tip is the detection closest to its last position, if within MAX_JUMP.
+    """
+    candidates = np.asarray(candidates, dtype=float).reshape(-1, 3)
+    if reach is not None and len(candidates):
+        candidates = candidates[np.linalg.norm(candidates - reach[0], axis=1) <= reach[1]]
+    if len(background) and len(candidates):
+        distances = np.linalg.norm(candidates[:, None, :] - np.asarray(background)[None, :, :], axis=2)
+        candidates = candidates[distances.min(axis=1) > config.BACKGROUND_RADIUS]
+    if prediction is not None and len(candidates):
+        candidates = candidates[np.linalg.norm(candidates - prediction, axis=1) <= config.PREDICTION_GATE]
+    if not len(candidates):
+        return None
+    distances = np.linalg.norm(candidates - lastTip, axis=1)
+    nearest = int(np.argmin(distances))
+    return candidates[nearest].copy() if distances[nearest] <= config.MAX_JUMP else None
+
+
 class FakeRobot:
     """
     Made-up continuum robot, hanging along -Y, 195 mm long, cables 6 mm off the axis.
@@ -28,9 +51,36 @@ class FakeRobot:
     SHORTENING = 0.3  # mm of backbone shortening per mm of co-contraction
     NOISE = 0.3  # mm
 
-    def __init__(self, seed=0):
+    def __init__(self, seed=0, hideBeyond=None, strayBlob=None):
+        """
+        `hideBeyond` (rad): the camera loses the tip when the bend is larger (marker turned away).
+        `strayBlob` ((3,) mm): a stray detection always in view. Together they reproduce the tracker locking onto a
+        stray blob, to test the tracking.
+        """
         self._angles = np.zeros(4)
         self._rng = np.random.default_rng(seed)
+        self.hideBeyond = hideBeyond
+        self.strayBlob = None if strayBlob is None else np.asarray(strayBlob, dtype=float)
+        self._lastTip = self.tipFromAngles(np.zeros(4))[0]
+        self._background = np.zeros((0, 3))
+        self._prediction = None
+        self._reach = None
+
+    def setReach(self, base, radius):
+        """Ignore detections farther than `radius` mm from the robot's base `base` (it can't reach there)."""
+        self._reach = (np.asarray(base, dtype=float), float(radius))
+
+    def setPrediction(self, position):
+        self._prediction = None if position is None else np.asarray(position, dtype=float)
+        if self._prediction is not None:
+            self._lastTip = self._prediction.copy()
+
+    def refreshTracking(self, duration=0.):
+        self._lastTip = self.tipFromAngles(np.zeros(4))[0]
+
+    def _bend(self):
+        w = config.windLengths(self._angles)
+        return np.hypot((w[0] - w[2]) / 2., (w[1] - w[3]) / 2.) / self.OFFSET
 
     @staticmethod
     def tipFromAngles(theta):
@@ -63,8 +113,21 @@ class FakeRobot:
 
     def readTip(self, nFrames=config.N_FRAMES):
         tip = self.tipFromAngles(self._angles)[0]
-        frames = tip + self._rng.normal(0., self.NOISE, size=(nFrames, 3))
-        return frames.mean(axis=0), frames.std(axis=0), nFrames
+        frames = []
+        for _ in range(nFrames):
+            detections = []
+            if self.hideBeyond is None or self._bend() <= self.hideBeyond:
+                detections.append(tip + self._rng.normal(0., self.NOISE, 3))
+            if self.strayBlob is not None:
+                detections.append(self.strayBlob + self._rng.normal(0., 3., 3))  # wobbly stray blob
+            picked = pickTip(detections, self._background, self._lastTip, self._prediction, self._reach)
+            if picked is not None:
+                self._lastTip = picked
+                frames.append(picked)
+        if not frames:
+            return None, None, 0
+        frames = np.array(frames)
+        return np.median(frames, axis=0), frames.std(axis=0), len(frames)
 
     def waitSettled(self, **kwargs):
         return True
@@ -175,20 +238,39 @@ class EmioRobot:
                 self._warnedCurrents = True
             return np.zeros(4)
 
+    def setReach(self, base, radius):
+        """Ignore detections farther than `radius` mm from the robot's base `base` (it can't reach there)."""
+        self._reach = (np.asarray(base, dtype=float), float(radius))
+
+    def setPrediction(self, position):
+        """
+        Where the tip is expected (e.g. from the calibrated physics model), or None. While set, only detections within
+        `PREDICTION_GATE` mm of it can be the tip, so a stray blob elsewhere is never taken for the tip.
+        """
+        self._prediction = None if position is None else np.asarray(position, dtype=float)
+        if self._prediction is not None:
+            self._lastTip = self._prediction.copy()
+
+    def refreshTracking(self, duration=2.):
+        """With the robot at rest: find the tip again and add the static blobs seen now to the background."""
+        previous = self._background
+        self._initTracking(duration)
+        if len(previous):
+            merged = list(self._background)
+            for p in previous:
+                if not merged or np.min(np.linalg.norm(np.array(merged) - p, axis=1)) > config.BACKGROUND_RADIUS:
+                    merged.append(p)
+            self._background = np.array(merged).reshape(-1, 3)
+
     def _readMarker(self, timeout=1.):
         """One camera reading of the tip marker (the detection closest to its last position), or None."""
         end = time.time() + timeout
         while time.time() < end:
-            candidates = self._detections()
-            if len(self._background) and len(candidates):
-                distances = np.linalg.norm(candidates[:, None, :] - self._background[None, :, :], axis=2)
-                candidates = candidates[distances.min(axis=1) > config.BACKGROUND_RADIUS]
-            if len(candidates):
-                distances = np.linalg.norm(candidates - self._lastTip, axis=1)
-                nearest = int(np.argmin(distances))
-                if distances[nearest] <= config.MAX_JUMP:
-                    self._lastTip = candidates[nearest]
-                    return candidates[nearest].copy()
+            picked = pickTip(self._detections(), self._background, self._lastTip, getattr(self, "_prediction", None),
+                             getattr(self, "_reach", None))
+            if picked is not None:
+                self._lastTip = picked
+                return picked
         return None
 
     def readTip(self, nFrames=config.N_FRAMES):
@@ -217,6 +299,35 @@ class EmioRobot:
             self.camera.close()
         finally:
             self.motors.close()
+
+
+class EmioMotorsOnly:
+    """
+    The real Emio's 4 motors only, without the camera (for steering by eye, `teleop.py`).
+    Same interface as `EmioRobot` for the motors: `angles` (get/set, rad), `currents` (mA), `close()`.
+    """
+
+    CURRENT_UNIT = EmioRobot.CURRENT_UNIT
+    currents = EmioRobot.currents
+
+    def __init__(self, port=None):
+        from emioapi.emiomotors import EmioMotors
+        self.motors = EmioMotors()
+        if self.motors.findAndOpen(device_name=port) < 0:
+            raise RuntimeError(f"Could not connect to the Emio motors{' on ' + port if port else ''}. Check the USB, "
+                               f"the power supply, and that Emio Labs / other scripts aren't using the port.")
+
+    @property
+    def angles(self):
+        return np.array(self.motors.angles, dtype=float)
+
+    @angles.setter
+    def angles(self, value):
+        self.motors.angles = [float(a) for a in value]
+
+    def close(self):
+        """Close the connection (turns the motors' torque off)."""
+        self.motors.close()
 
 
 def rampTo(robot, target, maxStep=config.MAX_STEP, period=config.STEP_PERIOD, maxCurrent=config.MAX_CURRENT,
