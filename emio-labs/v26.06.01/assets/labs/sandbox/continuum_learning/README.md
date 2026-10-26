@@ -20,7 +20,19 @@ The forward model is learned rather than the inverse because the 4 angles are re
 | `ik.py` | Loads the model and solves the inverse kinematics. Needs only numpy and scipy, so it also runs in SOFA |
 | `goto.py` | Moves the real robot to a position and measures the error |
 | `plot_model.py` | Plots the data with the trained model: effect of each motor, predicted vs measured, workspace map |
+| `teleop.py` | Steer the real robot by eye with W/A/S/D from the terminal: no camera, model or SOFA needed |
+| `clean_data.py` | Writes a cleaned copy of a data file: only good samples, without the readings of a stuck tracker or out of the robot's reach |
 | `calibrate_sim.py` | Fits the SOFA simulation to the data (each motor's slack and gain, cable angles, robot length and base), so the simulated tip goes where the real one went for the same angles. Saves `models/sim_calibration.json`, which `continuum.py` loads automatically |
+
+## Steer by eye (no data needed)
+
+Close Emio Labs / SOFA, then (in the emio-ml environment, from this folder):
+
+```powershell
+python teleop.py --port COM12
+```
+
+With this terminal focused, hold **W / S** to bend toward +x / -x, **D / A** toward +z / -z (0.5 rad/s, `--speed` to change), **R** to straighten, **Q** to quit (the robot straightens and the motors are released). Opposite cables work in pairs, each motor stays within ±2.5 rad (`--max-theta`), and a move that makes a motor draw more than 600 mA is undone.
 
 ## Setup (once)
 
@@ -52,13 +64,21 @@ Run everything from this folder, in the `emio-ml` environment, **with Emio Labs/
 
 ### 2. Collect data
 
+The motors are limited to **1 rad** (`MAX_PULL = 20` mm in `config.py`). Start the first collection small, with a new file:
+
 ```powershell
-python collect_data.py --n 200      # first short session (~8 min)
-python collect_data.py              # full set: 1200 samples + 30 repeats (~45 min)
+python collect_data.py --n 200 --out data/run1.csv
+python clean_data.py data/run1.csv
 ```
 
+`clean_data.py` writes `data/run1_clean.csv`: only good samples, without stuck-tracker or out-of-reach readings. For more data, collect again with **another seed and a new file** (e.g. `--seed 1 --out data/run2.csv`) and clean it; train on all the clean files together.
+
+Each `--out` file holds one plan (seed, n, max angle); the script refuses to mix plans in one file. Watch for `no_marker` (marker hidden at large bends), `tracking_lost` (the tracker stopped on a stray blob and re-finds the tip at the next rest pose) and `overcurrent`.
+
+Notes:
+
 - **Safety:** angles are limited to ±`MAX_THETA`, and the length wound on both cables of an opposite pair is limited to `MAX_COCONTRACTION`. A move stops and backs off if a motor draws more than `MAX_CURRENT`.
-- **Stopping and resuming:** Ctrl+C stops cleanly and releases the motors. Run the **same command** to resume where it stopped. The sample plan depends only on `--seed`.
+- **Stopping and resuming:** Ctrl+C stops cleanly and releases the motors. Run the **same command** to resume where it stopped. The sample plan depends on `--seed`, `--n` and `--max-theta`.
 
 ### 3. Train
 
