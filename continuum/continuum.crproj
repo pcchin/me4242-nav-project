@@ -1,0 +1,87 @@
+[Window.Live Control.Input/Output]
+open = false
+
+
+[Window.Live Control.Program]
+open = false
+
+
+[Window.Live Control.My Robot]
+open = true
+
+
+[Window.My Robot]
+dockId = 4
+
+
+[Window.Live Control.Move]
+open = false
+
+
+[Window.Live Control.Plotting]
+open = false
+
+
+[Window.Live Control.Viewport]
+open = true
+
+
+[Window.Viewport]
+dockId = 5
+
+
+[Window.Live Control.Scene Graph]
+open = false
+
+
+[Window.Scene Graph]
+dockId = 3
+
+
+[Window.Live Control.Components]
+open = false
+
+
+[Window.Live Control.Log]
+open = true
+
+
+[Window.Log]
+dockId = 6
+
+
+[Window.Live Control.Profiler]
+open = true
+
+
+[Window.Profiler]
+dockId = 6
+
+
+[Window.2Live Control]
+width = 614.000000
+height = 943.000000
+
+
+[Window.4Live Control]
+width = 614.000000
+height = 943.000000
+
+
+[Window.3Live Control]
+width = 614.000000
+height = 592.000000
+
+
+[Window.6Live Control]
+width = 1289.000000
+height = 345.000000
+
+
+[Window.5Live Control]
+width = 1289.000000
+height = 595.000000
+
+
+[Workbench]
+type = 4
