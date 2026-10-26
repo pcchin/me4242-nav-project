@@ -10,20 +10,15 @@ import numpy as np
 from enum import Enum
 import teleop
 
-MOTOR_CONTROL_AMOUNT = 0.1
-MOTOR_MAX_AMOUNT = 4
-MOTOR_MIN_AMOUNT = -1
-GLOBAL_KEYS = ['w', 'a', 's', 'd']
-keys_pressed = [False, False, False, False]
+GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
+keys_pressed = [False, False, False, False, False, False]
 system_exit = False
 
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
 COORDS_ORIGIN_JOINT_POS = [0,0,0,0]
 
-emio_motors = None
 emio_camera = None
-emio_motors_coords = [0,0,0,0]
 current_end_effector_coords = None
 prior_end_effector_coords = None
 prior_end_effector_velocity = None
@@ -65,6 +60,9 @@ text_calibration_status = None
 text_home_pos = None
 text_home_joints = None
 text_error = None
+text_valid_trackers = None
+text_last_pressed = None
+text_intermeans_intensity = None
 
 def raise_stop_flag():
     global system_exit
@@ -75,23 +73,24 @@ def set_home_pos():
     global COORDS_ORIGIN
     global current_end_effector_coords
     global text_home_pos
+    global text_home_joints
     global COORDS_ORIGIN_JOINT_POS
-    global emio_motors_coords
+    if current_end_effector_coords is None:
+        return
     COORDS_ORIGIN = current_end_effector_coords
     text_home_pos.set("Home position: " + str(COORDS_ORIGIN))
-    # FIXME: Set home pos not working
-    COORDS_ORIGIN_JOINT_POS = emio_motors.angles
-    text_home_joints.set("Home joints: " + str(emio_motors.angles))
+    COORDS_ORIGIN_JOINT_POS = teleop.get_motor_coords()
+    text_home_joints.set("Home joints: " + str(COORDS_ORIGIN_JOINT_POS))
 
 def return_home_direct():
-    global emio_motors
     global COORDS_ORIGIN_JOINT_POS
-    emio_motors.angles = COORDS_ORIGIN_JOINT_POS
+    teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS)
 
 def key_handler(event):
     global keys_pressed
+    global text_last_pressed
     #print(event.char, event.keysym, event.keycode)
-    print(str(event.char) + " pressed")
+    text_last_pressed.set(str(event.char) + " pressed")
     for i in range(0, len(GLOBAL_KEYS)):
         if event.char == GLOBAL_KEYS[i]:
             keys_pressed[i] = True
@@ -110,21 +109,22 @@ def check_exit():
 # Use intermeans to get foreground / background thresholding
 # Threshold lvl = min value diff tolerable by the program
 def get_intermeans_intensity(depth_frame, threshold=1):
+    global text_intermeans_intensity
     prev_means = np.mean(depth_frame)
-    logger.info(str(prev_means))
+    text_intermeans_intensity.set("Intermeans intensity: " + str(prev_means))
 
 def update():
-    global emio_motors
     global emio_camera
-    global emio_motors_coords
     global current_end_effector_coords
     global prior_end_effector_coords
     global prior_end_effector_velocity
     global keys_pressed
+    global text_valid_trackers
+    global text_error
 
     try:
         emio_camera.update()
-        print("-"*20)
+        #print("-"*20)
         #logger.info(f"Camera parameters: {emio_camera.parameters}")
         #logger.info(f"Camera show: {emio_camera.show_frames}")
         #logger.info(f"Camera tracking: {emio_camera.track_markers}")
@@ -140,8 +140,9 @@ def update():
         valid_trackers = [p for p in emio_camera.trackers_pos if all([
                             p[k] >= TASK_SPACE_BOUNDARY[k][0] and
                             p[k] <= TASK_SPACE_BOUNDARY[k][1] for k in range(0, len(TASK_SPACE_BOUNDARY))])]
-        logger.info(f"Current mode: {navigation_mode}")
-        logger.info(f"Valid trackers: {valid_trackers}")
+        #logger.info(f"Current mode: {navigation_mode}")
+        text_valid_trackers.set(f"Valid trackers: {valid_trackers}")
+        text_error.set("Error: -")
 
         # Segmentation: Depth frame edge detection
         depth_frame = emio_camera.depth_frame
@@ -149,10 +150,10 @@ def update():
 
         # Find new postion of end effector
         if (not valid_trackers) or len(valid_trackers) == 0:
-            logger.error("No trackers found, end effector may be obstructed")
+            text_error.set("Error: No trackers found, end effector may be obstructed")
         else:
             if not prior_end_effector_coords:
-                prior_end_effector_coords = valid_trackers[0].copy()
+                prior_end_effector_coords = valid_trackers[0]
                 current_end_effector_coords = prior_end_effector_coords.copy()
                 logger.info("Setting end effector coords to first available valid tracker")
                 logger.info(f"{valid_trackers[0]}")
@@ -168,33 +169,16 @@ def update():
                         tgt = i
                         current_end_effector_coords = valid_trackers[i]
                         current_min_square_error = current_square
-        # Find new velocity of end effector
-        prior_end_effector_velocity = [current_end_effector_coords[i] - prior_end_effector_coords[i] for i in range(0, len(prior_end_effector_coords))]
+        if prior_end_effector_coords is not None:
+            # Find new velocity of end effector
+            prior_end_effector_velocity = [current_end_effector_coords[i] - prior_end_effector_coords[i] for i in range(0, len(prior_end_effector_coords))]
 
         # Check keyboard input
-        if keys_pressed[0]:
-            # W pressed
-            emio_motors_coords = teleop.on_key_pressed(emio_motors_coords, 0)
-        if keys_pressed[1]:
-            # A pressed
-            emio_motors_coords = teleop.on_key_pressed(emio_motors_coords, 1)
-        if keys_pressed[2]:
-            # S pressed
-            emio_motors_coords = teleop.on_key_pressed(emio_motors_coords, 2)
-        if keys_pressed[3]:
-            emio_motors_coords = teleop.on_key_pressed(emio_motors_coords, 3)
-        keys_pressed = [False, False, False, False]
+        if any(keys_pressed):
+            teleop.on_key_pressed([GLOBAL_KEYS[j] for j in range(0, len(GLOBAL_KEYS)) if keys_pressed[j] == True])
+        keys_pressed = [False, False, False, False, False, False]
+        # Motor updates are handled by the teleop side
 
-        # Limit check
-        for i in range(0, len(emio_motors_coords)):
-            if emio_motors_coords[i] < MOTOR_MIN_AMOUNT:
-                emio_motors_coords[i] = MOTOR_MIN_AMOUNT
-            if emio_motors_coords[i] > MOTOR_MAX_AMOUNT:
-                emio_motors_coords[i] = MOTOR_MAX_AMOUNT
-
-        # Actually run it
-        emio_motors.angles = emio_motors_coords
-        logger.info(str(emio_motors_coords))
         root.after(10, update)
     except KeyboardInterrupt:
         logger.warn("Keyboard interrupt received.")
@@ -204,16 +188,18 @@ def main():
     global keys_pressed
     global system_exit
     global navigation_mode
-    global emio_motors
     global emio_camera
-    global emio_motors_coords
     global current_end_effector_coords
     global prior_end_effector_coords
     global prior_end_effector_velocity
     global root
     global text_calibration_status
     global text_home_pos
+    global text_home_joints
     global text_error
+    global text_valid_trackers
+    global text_intermeans_intensity
+    global text_last_pressed
     global COORDS_ORIGIN
     global COORDS_ORIGIN_JOINT_POS
 
@@ -225,18 +211,15 @@ def main():
         emio_camera.fps = 30 # sets the fps to 30. Default is 60 and can only be one of 30. 60 or 90fps
         emio_camera.depth_max = 600 # sets the maximum depth to 600mm. Default is 430mm
         emio_camera.depth_min = 0 # sets the minimum depth to 0mm. Default is 2mm
-        emio_motors = emioapi.EmioMotors()
 
         if not emio_camera.open():
             raise RuntimeError("Unable to open EMIO camera")
-        if not emio_motors.open():
-            raise RuntimeError("Unable to open EMIO motors")
 
         root = emio_camera._camera.rootWindow
         # Create an additional window
         control_window = tk.Toplevel(root)
         control_window.title("ME4242 Navigation")
-        control_window.geometry("400x400")
+        control_window.geometry("400x500")
 
         ttk.Label(
             control_window,
@@ -260,6 +243,9 @@ def main():
         text_home_pos = tk.StringVar(value="Home position: " + str(COORDS_ORIGIN))
         text_home_joints = tk.StringVar(value="Home joints: " + str(COORDS_ORIGIN_JOINT_POS))
         text_error = tk.StringVar(value="Error: -")
+        text_valid_trackers = tk.StringVar(value="Valid trackers: -")
+        text_intermeans_intensity = tk.StringVar(value="Intermeans intensity: ")
+        text_last_pressed = tk.StringVar(value="No keys pressed")
 
         ttk.Label(
             control_window,
@@ -281,6 +267,24 @@ def main():
 
         ttk.Label(
             control_window,
+            textvariable=text_valid_trackers,
+            font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Label(
+            control_window,
+            textvariable=text_intermeans_intensity,
+            font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Label(
+            control_window,
+            textvariable=text_last_pressed,
+            font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Label(
+            control_window,
             textvariable=text_error,
             font=("Arial", 16),
             foreground="red"
@@ -296,6 +300,7 @@ def main():
         for i in range(0, len(GLOBAL_KEYS)):
             control_window.bind(GLOBAL_KEYS[i], key_handler)
 
+        teleop.init_motors()
         root.after(10, update)
         root.after(50, check_exit)
         root.mainloop()
@@ -304,8 +309,7 @@ def main():
         print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
-    if emio_motors:
-        emio_motors.close()
+    teleop.shutdown()
     if emio_camera:
         emio_camera.close()
     raise SystemExit
