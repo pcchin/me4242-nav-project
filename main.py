@@ -9,6 +9,7 @@ import traceback
 import numpy as np
 from enum import Enum
 import teleop
+from PIL import Image, ImageTk
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]
@@ -23,6 +24,7 @@ current_end_effector_coords = None
 prior_end_effector_coords = None
 prior_end_effector_velocity = None
 root = None
+custom_image = None
 
 # SIMULTANEOUS CONTROL VERSION
 
@@ -108,10 +110,21 @@ def check_exit():
 
 # Use intermeans to get foreground / background thresholding
 # Threshold lvl = min value diff tolerable by the program
-def get_intermeans_intensity(depth_frame, threshold=1):
+def get_intermeans_intensity(tgt_frame, threshold=2, count_limit=10):
     global text_intermeans_intensity
-    prev_means = np.mean(depth_frame)
-    text_intermeans_intensity.set("Intermeans intensity: " + str(prev_means))
+    prev_means = np.mean(tgt_frame)
+    while count_limit > 0:
+        l_mean = np.mean(tgt_frame[tgt_frame <= prev_means])
+        r_mean = np.mean(tgt_frame[tgt_frame > prev_means])
+        new_means = 0.5 * (l_mean + r_mean)
+        if (abs(new_means - prev_means)) < threshold:
+            print(np.mean(tgt_frame > prev_means))
+            return (new_means, (tgt_frame > new_means).astype(np.uint8))
+        prev_means = new_means
+        count_limit = count_limit - 1
+    print(np.sum(tgt_frame > prev_means))
+    # FIXME: Saturation thresholding gives correct mean but black frame
+    return (prev_means, (255 * (tgt_frame > prev_means)).astype(np.uint8))
 
 def update():
     global emio_camera
@@ -121,6 +134,7 @@ def update():
     global keys_pressed
     global text_valid_trackers
     global text_error
+    global custom_image
 
     try:
         emio_camera.update()
@@ -144,9 +158,14 @@ def update():
         text_valid_trackers.set(f"Valid trackers: {valid_trackers}")
         text_error.set("Error: -")
 
-        # Segmentation: Depth frame edge detection
-        depth_frame = emio_camera.depth_frame
-        split_intensity = get_intermeans_intensity(depth_frame)
+        # Segmentation: HSV frame (saturation) edge detection
+        (sat_threshold, sat_threshold_frame) = get_intermeans_intensity(emio_camera.hsv_frame[:,:,1])
+        text_intermeans_intensity.set("Saturation threshold: " + str(sat_threshold))
+        # Display thresholded frame
+        img = Image.fromarray(sat_threshold_frame, mode="L")
+        photo = ImageTk.PhotoImage(img, master=custom_image)
+        custom_image.configure(image=photo)
+        custom_image.image = photo
 
         # Find new postion of end effector
         if (not valid_trackers) or len(valid_trackers) == 0:
@@ -202,6 +221,7 @@ def main():
     global text_last_pressed
     global COORDS_ORIGIN
     global COORDS_ORIGIN_JOINT_POS
+    global custom_image
 
     # If pass, revert to mode 2
     navigation_mode = RobotMode.CALIBRATING
@@ -299,6 +319,12 @@ def main():
         # Bind all keys
         for i in range(0, len(GLOBAL_KEYS)):
             control_window.bind(GLOBAL_KEYS[i], key_handler)
+
+        # Create grayscale custom output window
+        custom_image_window = tk.Toplevel(root)
+        custom_image_window.title("ME4242 Custom Thresholding")
+        custom_image = tk.Label(custom_image_window)
+        custom_image.pack()
 
         teleop.init_motors()
         root.after(10, update)
