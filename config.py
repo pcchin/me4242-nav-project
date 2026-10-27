@@ -35,11 +35,13 @@ WORKSPACE_Y = (-240., -20.)  # mm, height range of the tip
 TIP_SEARCH_RADIUS = 50.  # mm, at start-up (robot at rest) the tip marker must be this close to the axis
 BACKGROUND_RADIUS = 15.  # mm, detections this close to a static background blob are ignored
 MAX_JUMP = 80.  # mm, a detection further than this from the last tip position is not the tip
+MAX_FRAME_JUMP = 15.  # mm, within one sample (robot settled), the tip moves less than this between two frames
 PREDICTION_GATE = 40.  # mm, when the tip position is predicted (calibrated physics), detections further are not the tip
 # Stuck tracker: the measured tip barely moves while the predicted tip moves a lot, over several samples
-STUCK_SAMPLES = 5
-STUCK_MEASURED_SPREAD = 2.  # mm
-STUCK_PREDICTED_SPREAD = 15.  # mm
+STUCK_SAMPLES = 8
+STUCK_MEASURED_SPREAD = 12.  # mm (a stray blob's reading wobbles)
+STUCK_PREDICTED_SPREAD = 40.  # mm
+STUCK_ANGLE_SPREAD = 0.5  # rad: away from rest, a reading standing still while the angles change this much is stuck
 
 
 def windLengths(theta, directions=MOTOR_DIRECTIONS, pulleyRadius=PULLEY_RADIUS):

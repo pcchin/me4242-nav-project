@@ -34,7 +34,7 @@ from robot_io import EmioRobot, FakeRobot, OverCurrentError, rampTo
 COLUMNS = (["sample_id", "kind", "status"]
            + [f"theta{i}_cmd" for i in range(4)] + [f"theta{i}_meas" for i in range(4)]
            + [f"current{i}" for i in range(4)]
-           + ["x", "y", "z", "std_x", "std_y", "std_z", "n_frames", "timestamp", "max_theta", "plan"])
+           + ["x", "y", "z", "std_x", "std_y", "std_z", "n_frames", "timestamp", "max_theta", "plan", "n_candidates"])
 REACH_MARGIN = 30.  # mm, added to the robot's length for the reach check (the fitted length and base are estimates)
 
 
@@ -93,24 +93,39 @@ def tipPredictor(simulate, path):
 
 
 class StuckDetector:
-    """The measured tip barely moves over several samples while the predicted tip moves a lot: the tracker is stuck."""
+    """
+    The tracker is stuck on a stray blob: away from the rest position, over several samples the measured tip barely
+    moves while the predicted tip moves a lot or the commanded angles change. (Near rest, slack cables can really leave
+    the tip still, so nothing is flagged there.)
+    """
 
     def __init__(self):
-        self.measured, self.predicted = [], []
+        self.measured, self.predicted, self.angles = [], [], []
 
-    def update(self, tip, prediction):
-        if tip is None or prediction is None:
-            return False
-        self.measured = (self.measured + [np.asarray(tip)])[-config.STUCK_SAMPLES:]
-        self.predicted = (self.predicted + [np.asarray(prediction)])[-config.STUCK_SAMPLES:]
-        if len(self.measured) < config.STUCK_SAMPLES:
-            return False
+    def update(self, tip, prediction, theta, restTip=None):
+        """Add a sample; returns the stuck point (3,) or None."""
+        if tip is None:
+            return None
+        if restTip is not None and np.linalg.norm(np.asarray(tip) - restTip) <= config.TIP_SEARCH_RADIUS:
+            self.reset()
+            return None
+        n = config.STUCK_SAMPLES
+        self.measured = (self.measured + [np.asarray(tip, dtype=float)])[-n:]
+        self.predicted = (self.predicted + [None if prediction is None else np.asarray(prediction)])[-n:]
+        self.angles = (self.angles + [np.asarray(theta, dtype=float)])[-n:]
+        if len(self.measured) < n:
+            return None
         spread = lambda points: np.max(np.linalg.norm(np.array(points) - np.mean(points, axis=0), axis=1))
-        return spread(self.measured) < config.STUCK_MEASURED_SPREAD and \
+        if spread(self.measured) >= config.STUCK_MEASURED_SPREAD:
+            return None
+        anglesMoving = np.max(np.abs(np.array(self.angles) - np.mean(self.angles, axis=0))) > config.STUCK_ANGLE_SPREAD
+        predictionMoving = all(p is not None for p in self.predicted) and \
             spread(self.predicted) > config.STUCK_PREDICTED_SPREAD
+        moving = anglesMoving or predictionMoving
+        return np.mean(self.measured, axis=0) if moving else None
 
     def reset(self):
-        self.measured, self.predicted = [], []
+        self.measured, self.predicted, self.angles = [], [], []
 
 
 def main():
@@ -167,7 +182,6 @@ def main():
           f"angles up to {maxTheta:g} rad.")
 
     stuck = StuckDetector()
-    trackingLost = False
     commanded = robot.angles
     start = time.time()
     try:
@@ -180,6 +194,7 @@ def main():
                 prediction = predict(theta) if predict is not None else None
                 try:
                     commanded = rampTo(robot, theta, start=commanded)
+                    robot.startSample()  # the tip may have moved far: look for it anywhere it can be
                     if kind == "rest":
                         # Find the tip again on the axis and refresh the background blobs
                         robot.setPrediction(None)
@@ -187,10 +202,9 @@ def main():
                         try:
                             robot.refreshTracking()
                             stuck.reset()
-                            trackingLost = False
                         except RuntimeError as e:
                             print(f"  step {step}: tip not found again at rest ({e}). Is the robot caught on "
-                                  f"something? Samples stay marked tracking_lost.")
+                                  f"something? Continuing; the tip is acquired again after each move.")
                     # Gate the tracking on the prediction only where the calibration can be trusted
                     robot.setPrediction(prediction if prediction is not None and np.abs(theta).max() <= validUpTo
                                         else None)
@@ -199,12 +213,16 @@ def main():
                     tip, std, nFrames = robot.readTip()
                     if tip is None:
                         status, tip, std = "no_marker", [np.nan] * 3, [np.nan] * 3
-                    elif trackingLost or stuck.update(tip, prediction):
-                        if not trackingLost:
-                            print(f"  step {step}: the measured tip stopped moving at {np.round(tip, 1)} while the "
-                                  f"predicted tip moves: tracking lost until the next rest pose")
-                        trackingLost = True
-                        status = "tracking_lost"
+                    else:
+                        strayBlob = stuck.update(tip, prediction, theta, robot.restTip)
+                        if strayBlob is not None:
+                            # A blob standing still while the robot moves: not the tip. Ignore it from now on (unless
+                            # it's at the rest position, where slack cables can really leave the tip still).
+                            status = "tracking_lost"
+                            robot.addBackground(strayBlob)
+                            print(f"  step {step}: a blob stays at {np.round(strayBlob, 1)} while the robot moves: "
+                                  f"not the tip, ignored from now on (clean_data.py removes earlier readings there)")
+                            stuck.reset()
                 except OverCurrentError as e:
                     print(f"  step {step}: {e}, skipped")
                     status, tip, std, nFrames = "overcurrent", [np.nan] * 3, [np.nan] * 3, 0
@@ -213,7 +231,7 @@ def main():
                 writer.writerow([sampleId, kind, status] + list(np.round(theta, 6))
                                 + list(np.round(robot.angles, 6)) + list(np.round(robot.currents, 1))
                                 + list(np.round(tip, 3)) + list(np.round(std, 3))
-                                + [nFrames, round(time.time(), 2), maxTheta, planId])
+                                + [nFrames, round(time.time(), 2), maxTheta, planId, robot.nCandidates])
                 f.flush()
 
                 if step % 20 == 0 or step == len(plan):
@@ -228,6 +246,16 @@ def main():
         finally:
             robot.close()
     print(f"Data in {os.path.abspath(args.out)}")
+    try:
+        with open(args.out, newline="") as f:
+            statuses = [row["status"] for row in csv.DictReader(f)]
+        lost = "".join("1" if st == "no_marker" else "0" for st in statuses)
+        streak = max((len(r) for r in lost.split("0")), default=0)
+        print(f"Summary: {len(statuses)} rows, {statuses.count('ok')} ok, {lost.count('1')} no_marker "
+              f"(longest streak {streak}), {statuses.count('tracking_lost')} tracking_lost, "
+              f"{statuses.count('overcurrent')} overcurrent")
+    except (OSError, KeyError):
+        pass
 
 
 if __name__ == "__main__":

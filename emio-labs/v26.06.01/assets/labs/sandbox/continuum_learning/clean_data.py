@@ -38,25 +38,44 @@ def loadPredictor(path):
     return (lambda theta: calibrate_sim.tipPositions(theta, params)), np.array(c["base"]), c["length"]
 
 
-def findStuckPoints(data, predicted):
-    """Rows (boolean mask) whose reading is a stuck tracker, and the stuck points found."""
+def restPosition(data):
+    """Measured tip at rest: the first rest pose of the file (each collection starts there), or else the sample with
+    the smallest angles."""
     valid = data[XYZ].notna().all(axis=1).values
-    xyz = data[XYZ].values
+    rest = np.where(valid & (data["kind"] == "rest").values)[0]
+    if not len(rest):
+        rest = np.where(valid)[0][[np.argmin(np.abs(data[THETA].values[valid]).max(axis=1))]]
+    return data[XYZ].values[rest[0]]
+
+
+def findStuckPoints(data, predicted):
+    """
+    Rows (boolean mask) whose reading is a stuck tracker, and the stuck points found. A stuck point: over
+    STUCK_SAMPLES consecutive readings away from rest, the reading stands still while the angles change (or the
+    predicted tip moves). Every reading at a stuck point is dropped.
+    """
+    valid = data[XYZ].notna().all(axis=1).values
+    xyz, theta = data[XYZ].values, data[THETA].values
+    rest = restPosition(data)
     rows = np.where(valid)[0]
     n = config.STUCK_SAMPLES
     spread = lambda points: np.max(np.linalg.norm(points - points.mean(axis=0), axis=1))
     centers = []
     for k in range(len(rows) - n + 1):
         window = rows[k:k + n]
-        if spread(xyz[window]) < config.STUCK_MEASURED_SPREAD and \
-                spread(predicted[window]) > config.STUCK_PREDICTED_SPREAD:
+        if spread(xyz[window]) >= config.STUCK_MEASURED_SPREAD:
+            continue
+        if np.linalg.norm(xyz[window].mean(axis=0) - rest) <= config.TIP_SEARCH_RADIUS:
+            continue  # near rest the tip can really stay still (slack cables)
+        anglesMoving = np.max(np.abs(theta[window] - theta[window].mean(axis=0))) > config.STUCK_ANGLE_SPREAD
+        predictionMoving = predicted is not None and spread(predicted[window]) > config.STUCK_PREDICTED_SPREAD
+        if anglesMoving or predictionMoving:
             center = xyz[window].mean(axis=0)
             if not centers or np.min(np.linalg.norm(np.array(centers) - center, axis=1)) > STUCK_RADIUS:
                 centers.append(center)
     stuck = np.zeros(len(data), dtype=bool)
     for center in centers:
-        stuck |= valid & (np.linalg.norm(xyz - center, axis=1) < STUCK_RADIUS) & \
-            (np.linalg.norm(xyz - predicted, axis=1) > FAR_FROM_PREDICTION)
+        stuck |= valid & (np.linalg.norm(xyz - center, axis=1) < STUCK_RADIUS)
     return stuck, centers
 
 
@@ -69,11 +88,15 @@ def main():
     args = parser.parse_args()
 
     data = pd.read_csv(args.data)
-    predict, base, length = loadPredictor(args.calibration)
-    predicted = predict(data[THETA].values)
+    if os.path.exists(args.calibration):
+        predict, base, length = loadPredictor(args.calibration)
+        predicted = predict(data[THETA].values)
+    else:
+        predicted, base, length = None, None, None
     stuck, centers = findStuckPoints(data, predicted)
     noisy = np.linalg.norm(data[["std_x", "std_y", "std_z"]].values, axis=1) > config.MAX_TIP_STD
-    unreachable = np.linalg.norm(data[XYZ].values - base, axis=1) > length + REACH_MARGIN
+    unreachable = np.zeros(len(data), dtype=bool) if base is None else \
+        np.linalg.norm(data[XYZ].values - base, axis=1) > length + REACH_MARGIN
     keep = (data["status"] == "ok").values & ~stuck & ~noisy & ~unreachable & data[XYZ].notna().all(axis=1).values
 
     print(f"{len(data)} rows: {data['status'].value_counts().to_dict()}")
@@ -82,8 +105,9 @@ def main():
     if stuck.any():
         print(f"Stuck readings: {int(stuck.sum())} rows, from row {int(np.argmax(stuck))} "
               f"({int((stuck & (data['status'] == 'ok').values).sum())} of them marked ok)")
-    print(f"Out of the robot's reach (> {length + REACH_MARGIN:.0f} mm from its base): {int(unreachable.sum())} rows "
-          f"({int((unreachable & (data['status'] == 'ok').values).sum())} of them marked ok)")
+    if base is not None:
+        print(f"Out of the robot's reach (> {length + REACH_MARGIN:.0f} mm from its base): {int(unreachable.sum())} "
+              f"rows ({int((unreachable & (data['status'] == 'ok').values).sum())} of them marked ok)")
     print(f"Kept {int(keep.sum())} good samples (ok, not stuck, reachable, camera std <= {config.MAX_TIP_STD} mm)")
 
     out = args.out or os.path.splitext(args.data)[0] + "_clean.csv"

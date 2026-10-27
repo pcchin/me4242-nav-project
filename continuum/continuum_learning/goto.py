@@ -44,8 +44,8 @@ def main():
     robot = FakeRobot() if args.simulate else EmioRobot()
     try:
         rampTo(robot, theta)
-        if hasattr(robot, "_lastTip"):
-            robot._lastTip = result["predicted"]  # look for the marker where the model expects the tip
+        robot._lastTip = np.asarray(result["predicted"], dtype=float)  # if several blobs: prefer the expected place
+        robot.startSample()
         robot.waitSettled()
         tip, std, nFrames = robot.readTip()
         if tip is None:

@@ -16,13 +16,12 @@ class OverCurrentError(RuntimeError):
     pass
 
 
-def pickTip(candidates, background, lastTip, prediction=None, reach=None):
+def filterCandidates(candidates, background, prediction=None, reach=None):
     """
-    Which detection (n, 3) is the tip marker, or None:
-        - detections farther from the robot's base than it can reach (`reach` = (base, radius)) are ignored,
-        - detections close to a static background blob are ignored,
-        - if the tip is predicted, only detections within PREDICTION_GATE of the prediction are kept,
-        - the tip is the detection closest to its last position, if within MAX_JUMP.
+    The detections (n, 3) that can be the tip marker:
+        - not farther from the robot's base than it can reach (`reach` = (base, radius)),
+        - not close to a static background blob,
+        - if the tip is predicted, within PREDICTION_GATE of the prediction.
     """
     candidates = np.asarray(candidates, dtype=float).reshape(-1, 3)
     if reach is not None and len(candidates):
@@ -32,11 +31,28 @@ def pickTip(candidates, background, lastTip, prediction=None, reach=None):
         candidates = candidates[distances.min(axis=1) > config.BACKGROUND_RADIUS]
     if prediction is not None and len(candidates):
         candidates = candidates[np.linalg.norm(candidates - prediction, axis=1) <= config.PREDICTION_GATE]
+    return candidates
+
+
+def pickTip(candidates, background, lastTip, prediction=None, reach=None, acquire=False):
+    """
+    Which detection is the tip marker, or None (detections filtered with `filterCandidates`).
+        - acquire (first reading after a move): the robot may have moved far, so no distance check to the old position:
+          a single candidate is the tip; with several, the one closest to the prediction (or to the last position),
+        - track (the following readings of the same, settled pose): the candidate closest to the previous reading, if
+          within MAX_FRAME_JUMP.
+    """
+    candidates = filterCandidates(candidates, background, prediction, reach)
     if not len(candidates):
         return None
+    if acquire:
+        if len(candidates) == 1:
+            return candidates[0].copy()
+        reference = prediction if prediction is not None else lastTip
+        return candidates[int(np.argmin(np.linalg.norm(candidates - reference, axis=1)))].copy()
     distances = np.linalg.norm(candidates - lastTip, axis=1)
     nearest = int(np.argmin(distances))
-    return candidates[nearest].copy() if distances[nearest] <= config.MAX_JUMP else None
+    return candidates[nearest].copy() if distances[nearest] <= config.MAX_FRAME_JUMP else None
 
 
 class FakeRobot:
@@ -65,6 +81,9 @@ class FakeRobot:
         self._background = np.zeros((0, 3))
         self._prediction = None
         self._reach = None
+        self._acquire = False
+        self.nCandidates = 0
+        self.restTip = self._lastTip.copy()
 
     def setReach(self, base, radius):
         """Ignore detections farther than `radius` mm from the robot's base `base` (it can't reach there)."""
@@ -77,6 +96,15 @@ class FakeRobot:
 
     def refreshTracking(self, duration=0.):
         self._lastTip = self.tipFromAngles(np.zeros(4))[0]
+        self._acquire = False
+
+    def addBackground(self, point):
+        """Ignore detections near `point` from now on (a stray blob found while collecting)."""
+        self._background = np.vstack([np.asarray(self._background).reshape(-1, 3), np.asarray(point, dtype=float)])
+
+    def startSample(self):
+        """After a move: the next reading looks for the tip anywhere (it may have moved far)."""
+        self._acquire = True
 
     def _bend(self):
         w = config.windLengths(self._angles)
@@ -120,10 +148,15 @@ class FakeRobot:
                 detections.append(tip + self._rng.normal(0., self.NOISE, 3))
             if self.strayBlob is not None:
                 detections.append(self.strayBlob + self._rng.normal(0., 3., 3))  # wobbly stray blob
-            picked = pickTip(detections, self._background, self._lastTip, self._prediction, self._reach)
+            self.nCandidates = len(filterCandidates(detections, self._background, self._prediction, self._reach))
+            picked = pickTip(detections, self._background, self._lastTip, self._prediction, self._reach,
+                             acquire=self._acquire)
             if picked is not None:
                 self._lastTip = picked
+                self._acquire = False
                 frames.append(picked)
+            elif not self._acquire:
+                self._acquire = True  # lost while tracking: look for it anywhere again
         if not frames:
             return None, None, 0
         frames = np.array(frames)
@@ -164,6 +197,8 @@ class EmioRobot:
 
         self._lastTip = None
         self._background = np.zeros((0, 3))
+        self._acquire = False
+        self.nCandidates = 0
         try:
             self._initTracking(trackingTime)
         except RuntimeError:
@@ -207,6 +242,8 @@ class EmioRobot:
             raise RuntimeError(f"No marker near the robot's axis (closest blob at {np.round(static[tipIndex], 1)} mm)."
                                " Start with the robot at rest, hanging straight.")
         self._lastTip = static[tipIndex]
+        self.restTip = self._lastTip.copy()
+        self._acquire = False
         self._background = np.delete(static, tipIndex, axis=0)
         print(f"Tip marker found at {np.round(self._lastTip, 1)} mm; {len(self._background)} background blob(s) "
               f"ignored{': ' + str(np.round(self._background, 0).tolist()) if len(self._background) else ''}")
@@ -251,6 +288,14 @@ class EmioRobot:
         if self._prediction is not None:
             self._lastTip = self._prediction.copy()
 
+    def addBackground(self, point):
+        """Ignore detections near `point` from now on (a stray blob found while collecting)."""
+        self._background = np.vstack([np.asarray(self._background).reshape(-1, 3), np.asarray(point, dtype=float)])
+
+    def startSample(self):
+        """After a move: the next reading looks for the tip anywhere (it may have moved far)."""
+        self._acquire = True
+
     def refreshTracking(self, duration=2.):
         """With the robot at rest: find the tip again and add the static blobs seen now to the background."""
         previous = self._background
@@ -263,14 +308,21 @@ class EmioRobot:
             self._background = np.array(merged).reshape(-1, 3)
 
     def _readMarker(self, timeout=1.):
-        """One camera reading of the tip marker (the detection closest to its last position), or None."""
+        """
+        One camera reading of the tip marker, or None. Right after a move (`startSample`), the tip is acquired anywhere
+        it can be; then it's tracked from frame to frame. If it's lost while tracking, the next reading acquires again.
+        """
+        prediction, reach = getattr(self, "_prediction", None), getattr(self, "_reach", None)
         end = time.time() + timeout
         while time.time() < end:
-            picked = pickTip(self._detections(), self._background, self._lastTip, getattr(self, "_prediction", None),
-                             getattr(self, "_reach", None))
+            detections = self._detections()
+            self.nCandidates = len(filterCandidates(detections, self._background, prediction, reach))
+            picked = pickTip(detections, self._background, self._lastTip, prediction, reach, acquire=self._acquire)
             if picked is not None:
                 self._lastTip = picked
+                self._acquire = False
                 return picked
+        self._acquire = True  # not found: don't keep comparing with an old position
         return None
 
     def readTip(self, nFrames=config.N_FRAMES):
@@ -310,10 +362,14 @@ class EmioMotorsOnly:
     CURRENT_UNIT = EmioRobot.CURRENT_UNIT
     currents = EmioRobot.currents
 
-    def __init__(self, port=None):
+    def __init__(self, port=None, multiTurn=False):
+        """
+        `multiTurn`: extended position mode, needed for angles beyond +-pi (the standard position mode covers one
+        turn). The next normal connection (Emio Labs, the other scripts) switches the motors back to position mode.
+        """
         from emioapi.emiomotors import EmioMotors
         self.motors = EmioMotors()
-        if self.motors.findAndOpen(device_name=port) < 0:
+        if self.motors.findAndOpen(device_name=port, multi_turn=multiTurn) < 0:
             raise RuntimeError(f"Could not connect to the Emio motors{' on ' + port if port else ''}. Check the USB, "
                                f"the power supply, and that Emio Labs / other scripts aren't using the port.")
 

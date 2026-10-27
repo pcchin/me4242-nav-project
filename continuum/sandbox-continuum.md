@@ -24,6 +24,8 @@ Steer the robot directly with the keyboard, by eye (no camera or trained model n
 
 #runsofa-button(file="assets/labs/sandbox-continuum/continuum.py", pyargs=["--inputs", "keys"])
 
+To drive the real robot from a terminal instead (no SOFA), use `continuum_learning/teleop.py` (W/A/S/D) or `continuum_learning/trajectory.py` (circle, square, figure8, cross, custom waypoints or the saved trajectories), in the emio-ml environment with Emio Labs closed, e.g. `python trajectory.py trajectory1 --port COM3`.
+
 Drive the robot with the pulled length of each cable (mm) instead, opposite cables working in pairs:
 
 #runsofa-button(file="assets/labs/sandbox-continuum/continuum.py", pyargs=["--inputs", "pulls"])

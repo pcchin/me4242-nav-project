@@ -21,6 +21,7 @@ The forward model is learned rather than the inverse because the 4 angles are re
 | `goto.py` | Moves the real robot to a position and measures the error |
 | `plot_model.py` | Plots the data with the trained model: effect of each motor, predicted vs measured, workspace map |
 | `teleop.py` | Steer the real robot by eye with W/A/S/D from the terminal: no camera, model or SOFA needed |
+| `trajectory.py` | Runs a hardcoded trajectory (circle, square, figure8, cross or your own waypoints) on the real robot, with the same bends as `teleop.py` |
 | `clean_data.py` | Writes a cleaned copy of a data file: only good samples, without the readings of a stuck tracker or out of the robot's reach |
 | `calibrate_sim.py` | Fits the SOFA simulation to the data (each motor's slack and gain, cable angles, robot length and base), so the simulated tip goes where the real one went for the same angles. Saves `models/sim_calibration.json`, which `continuum.py` loads automatically |
 
@@ -32,7 +33,18 @@ Close Emio Labs / SOFA, then (in the emio-ml environment, from this folder):
 python teleop.py --port COM12
 ```
 
-With this terminal focused, hold **W / S** to bend toward +x / -x, **D / A** toward +z / -z (0.5 rad/s, `--speed` to change), **R** to straighten, **Q** to quit (the robot straightens and the motors are released). Opposite cables work in pairs, each motor stays within ±2.5 rad (`--max-theta`), and a move that makes a motor draw more than 600 mA is undone.
+With this terminal focused, hold **W / S** to bend toward +x / -x, **D / A** toward +z / -z (1 rad/s, `--speed` to change), **R** to straighten, **Q** to quit (the robot straightens and the motors are released). Opposite cables work in pairs, each motor stays within ±4 rad (`--max-theta`; beyond ±π the motors run in their multi-turn mode), and no motor current limit by default (`--max-current` to set one).
+
+### Hardcoded trajectory
+
+```powershell
+python trajectory.py circle --port COM12
+python trajectory.py square --amplitude 1.5 --loops 3 --pause 1
+python trajectory.py custom --waypoints "1,0; 1,1; 0,1; 0,0" --speed 0.3
+python trajectory.py trajectory1 --port COM3   # saved trajectory (SAVED in trajectory.py)
+```
+
+The path is a list of bends (x, z) in rad, the same as `teleop.py`'s W/S (x) and D/A (z). Shapes: `circle`, `square`, `figure8`, `cross` (scaled by `--amplitude`, default 1 rad) or `custom` (`--waypoints`, unscaled). The robot moves along it at `--speed` (1 rad/s), `--loops` times, holding `--pause` s at each corner. It starts and ends straight; **Q** or Ctrl+C stops it. Same ±4 rad limit and no current limit by default. `--simulate` runs it without hardware.
 
 ## Setup (once)
 

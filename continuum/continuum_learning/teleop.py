@@ -7,7 +7,7 @@ Hold (while this terminal has the focus):
     R       back to straight (all motors at 0)
     Q       quit (back to straight, motors released); Ctrl+C does the same
 Opposite cables always work in pairs (one winds, the other releases), so they never fight. Each motor stays within
-+-2.5 rad (--max-theta). A move that makes a motor draw more than 1200 mA (--max-current) is undone.
++-4 rad (--max-theta; beyond +-pi the motors are switched to multi-turn mode). No motor current limit by default (--max-current to set one); currents are displayed.
 
 Usage (from this folder, in the emio-ml environment; close Emio Labs / SOFA first, they'd hold the port):
     python teleop.py --port COM12
@@ -28,9 +28,11 @@ KEYS = {"W": ("x", 1.), "S": ("x", -1.), "D": ("z", 1.), "A": ("z", -1.)}
 KEY_RATE = 30.  # key-repeat events per second while a key is held (Windows default, about 30)
 LOOP_PERIOD = 0.02  # s
 RELEASED_AFTER = 0.6  # s without key events: the keys are released (longer than the first key-repeat delay)
-SPEED = 0.5  # rad/s, bending speed while a key is held
-MAX_THETA = 2.5  # rad, angle limit of each motor for steering by eye (data collection keeps config.MAX_THETA)
-MAX_CURRENT = 1200.  # mA, a move above is undone (XM430-W210 stalls around 1300 mA; data collection keeps 600 mA)
+SPEED = 1.0  # rad/s, bending speed while a key is held
+MAX_THETA = 4.0  # rad, angle limit of each motor for steering by eye (data collection keeps config.MAX_THETA)
+SINGLE_TURN_LIMIT = 3.1  # rad: beyond about +-pi, the motors need their extended (multi-turn) position mode
+MAX_CURRENT = float("inf")  # mA, no limit by default (user's choice); --max-current sets one. The motors still protect
+# themselves (overload error, torque off at 53 degC)
 
 
 def bendFromAngles(theta):
@@ -91,17 +93,20 @@ def main():
     parser.add_argument("--port", default=None, help="serial port of the robot, e.g. COM12 (default: first found)")
     parser.add_argument("--speed", type=float, default=SPEED, help="bending speed while a key is held (rad/s)")
     parser.add_argument("--max-theta", type=float, default=MAX_THETA, help="angle limit of each motor (rad)")
-    parser.add_argument("--max-current", type=float, default=MAX_CURRENT, help="mA, a move above is undone")
+    parser.add_argument("--max-current", type=float, default=MAX_CURRENT,
+                        help="mA, a move above is undone (default: no limit)")
     parser.add_argument("--simulate", action="store_true", help="made-up robot instead of the hardware")
     parser.add_argument("--script", default=None, help='scripted keys instead of the keyboard, e.g. "W*30,R,Q"')
     args = parser.parse_args()
 
     keys = ScriptKeys(args.script) if args.script else TerminalKeys()
-    robot = FakeRobot() if args.simulate else EmioMotorsOnly(args.port)
+    multiTurn = args.max_theta > SINGLE_TURN_LIMIT
+    robot = FakeRobot() if args.simulate else EmioMotorsOnly(args.port, multiTurn=multiTurn)
     maxTheta, step = args.max_theta, args.speed / KEY_RATE
     print(__doc__.split("Usage")[0].strip())
     print(f"\nConnected to the {'made-up' if args.simulate else 'real'} robot (limit +-{maxTheta:g} rad, "
-          f"{args.speed:g} rad/s, current limit {args.max_current:g} mA). Straightening first...")
+          f"{args.speed:g} rad/s, " + ("multi-turn mode, " if multiTurn else "") + ("no current limit" if args.max_current == float("inf") else
+                                       f"current limit {args.max_current:g} mA") + "). Straightening first...")
 
     commanded = robot.angles
     try:
