@@ -9,22 +9,31 @@ import traceback
 import numpy as np
 from enum import Enum
 import teleop
+import trajectory
 from PIL import Image, ImageTk
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]
 system_exit = False
+fixed_trajectory_in_progress = False
 
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
 COORDS_ORIGIN_JOINT_POS = [0,0,0,0]
 
+GLOBAL_MAX_THETA = teleop.MAX_THETA  # rad, angle limit of each motor for steering by eye (data collection keeps config.MAX_THETA)
+SINGLE_TURN_LIMIT = 3.1  # rad: beyond about +-pi, the motors need their extended (multi-turn) position mode
+
 emio_camera = None
+emio_motors = None
 current_end_effector_coords = None
 prior_end_effector_coords = None
 prior_end_effector_velocity = None
 root = None
 custom_image = None
+traj_shape_val = None
+traj_amplitude_val = None
+traj_loops_val = None
 
 # SIMULTANEOUS CONTROL VERSION
 
@@ -68,8 +77,12 @@ text_intermeans_intensity = None
 
 def raise_stop_flag():
     global system_exit
+    global emio_motors
     print("Stop flag raised via button")
-    system_exit = True
+    if fixed_trajectory_in_progress:
+        trajectory.terminate_current(emio_motors)
+    else:
+        system_exit = True
 
 def set_home_pos():
     global COORDS_ORIGIN
@@ -77,6 +90,9 @@ def set_home_pos():
     global text_home_pos
     global text_home_joints
     global COORDS_ORIGIN_JOINT_POS
+    global fixed_trajectory_in_progress
+    if fixed_trajectory_in_progress:
+        return
     if current_end_effector_coords is None:
         return
     COORDS_ORIGIN = current_end_effector_coords
@@ -86,16 +102,39 @@ def set_home_pos():
 
 def return_home_direct():
     global COORDS_ORIGIN_JOINT_POS
-    teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS)
+    global fixed_trajectory_in_progress
+    if fixed_trajectory_in_progress:
+        return
+    teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS, emio_motors)
 
 def key_handler(event):
     global keys_pressed
     global text_last_pressed
+    global fixed_trajectory_in_progress
+    if fixed_trajectory_in_progress:
+        text_last_pressed.set("Fixed trajectory ongoing")
+        return
     #print(event.char, event.keysym, event.keycode)
     text_last_pressed.set(str(event.char) + " pressed")
     for i in range(0, len(GLOBAL_KEYS)):
         if event.char == GLOBAL_KEYS[i]:
             keys_pressed[i] = True
+
+def goto_trajectory():
+    global traj_amplitude_val
+    global traj_loops_val
+    global traj_shape_val
+    global emio_motors
+    try:
+        amplitude_val = float(traj_amplitude_val.get())
+    except Exception as e:
+        amplitude_val = 1.0
+    try:
+        loops_val = int(traj_loops_val.get())
+    except Exception as e:
+        loops_val = 1
+    if traj_shape_val.get() and len(traj_shape_val.get()) > 0:
+        trajectory.main(amplitude_val, loops_val, traj_shape_val.get(), emio_motors)
 
 def signal_handler(sig, frame):
     global system_exit
@@ -110,6 +149,7 @@ def check_exit():
 
 # Use intermeans to get foreground / background thresholding
 # Threshold lvl = min value diff tolerable by the program
+# FIXME: Unused
 def get_intermeans_intensity(tgt_frame, threshold=2, count_limit=10):
     global text_intermeans_intensity
     prev_means = np.mean(tgt_frame)
@@ -128,6 +168,7 @@ def get_intermeans_intensity(tgt_frame, threshold=2, count_limit=10):
 
 def update():
     global emio_camera
+    global emio_motors
     global current_end_effector_coords
     global prior_end_effector_coords
     global prior_end_effector_velocity
@@ -138,6 +179,9 @@ def update():
 
     try:
         emio_camera.update()
+
+        fixed_trajectory_in_progress = get_trajectory_is_active()
+
         #print("-"*20)
         #logger.info(f"Camera parameters: {emio_camera.parameters}")
         #logger.info(f"Camera show: {emio_camera.show_frames}")
@@ -159,13 +203,16 @@ def update():
         text_error.set("Error: -")
 
         # Segmentation: HSV frame (saturation) edge detection
-        (sat_threshold, sat_threshold_frame) = get_intermeans_intensity(emio_camera.hsv_frame[:,:,1])
-        text_intermeans_intensity.set("Saturation threshold: " + str(sat_threshold))
+        #(sat_threshold, sat_threshold_frame) = get_intermeans_intensity(emio_camera.hsv_frame[:,:,1])
+        #text_intermeans_intensity.set("Saturation threshold: " + str(sat_threshold))
         # Display thresholded frame
-        img = Image.fromarray(sat_threshold_frame, mode="L")
-        photo = ImageTk.PhotoImage(img, master=custom_image)
-        custom_image.configure(image=photo)
-        custom_image.image = photo
+
+        # TODO: Create slam output frame
+        if False:
+            img = Image.fromarray(slam_output_frame, mode="L")
+            photo = ImageTk.PhotoImage(img, master=custom_image)
+            custom_image.configure(image=photo)
+            custom_image.image = photo
 
         # Find new postion of end effector
         if (not valid_trackers) or len(valid_trackers) == 0:
@@ -193,10 +240,11 @@ def update():
             prior_end_effector_velocity = [current_end_effector_coords[i] - prior_end_effector_coords[i] for i in range(0, len(prior_end_effector_coords))]
 
         # Check keyboard input
-        if any(keys_pressed):
-            teleop.on_key_pressed([GLOBAL_KEYS[j] for j in range(0, len(GLOBAL_KEYS)) if keys_pressed[j] == True])
+        if (not fixed_trajectory_in_progress) and any(keys_pressed):
+            teleop.on_key_pressed([GLOBAL_KEYS[j] for j in range(0, len(GLOBAL_KEYS)) if keys_pressed[j] == True], emio_motors)
         keys_pressed = [False, False, False, False, False, False]
         # Motor updates are handled by the teleop side
+        trajectory.update(emio_motors)
 
         root.after(10, update)
     except KeyboardInterrupt:
@@ -222,6 +270,10 @@ def main():
     global COORDS_ORIGIN
     global COORDS_ORIGIN_JOINT_POS
     global custom_image
+    global traj_shape_val
+    global traj_amplitude_val
+    global traj_loops_val
+    global emio_motors
 
     # If pass, revert to mode 2
     navigation_mode = RobotMode.CALIBRATING
@@ -239,7 +291,7 @@ def main():
         # Create an additional window
         control_window = tk.Toplevel(root)
         control_window.title("ME4242 Navigation")
-        control_window.geometry("400x500")
+        control_window.geometry("400x600")
 
         ttk.Label(
             control_window,
@@ -266,24 +318,26 @@ def main():
         text_valid_trackers = tk.StringVar(value="Valid trackers: -")
         text_intermeans_intensity = tk.StringVar(value="Intermeans intensity: ")
         text_last_pressed = tk.StringVar(value="No keys pressed")
+        traj_amplitude_val = tk.StringVar(value="1.0")
+        traj_loops_val = tk.StringVar(value="1")
 
-        ttk.Label(
-            control_window,
-            textvariable=text_calibration_status,
-            font=("Arial", 16)
-        ).pack(pady=10)
+        #ttk.Label(
+        #    control_window,
+        #    textvariable=text_calibration_status,
+        #    font=("Arial", 16)
+        #).pack(pady=10)
 
-        ttk.Label(
-            control_window,
-            textvariable=text_home_pos,
-            font=("Arial", 16)
-        ).pack(pady=10)
+        #ttk.Label(
+        #    control_window,
+        #    textvariable=text_home_pos,
+        #    font=("Arial", 16)
+        #).pack(pady=10)
 
-        ttk.Label(
-            control_window,
-            textvariable=text_home_joints,
-            font=("Arial", 16)
-        ).pack(pady=10)
+        #ttk.Label(
+        #    control_window,
+        #    textvariable=text_home_joints,
+        #    font=("Arial", 16)
+        #).pack(pady=10)
 
         ttk.Label(
             control_window,
@@ -291,16 +345,50 @@ def main():
             font=("Arial", 16)
         ).pack(pady=10)
 
-        ttk.Label(
-            control_window,
-            textvariable=text_intermeans_intensity,
-            font=("Arial", 16)
-        ).pack(pady=10)
+        #ttk.Label(
+        #    control_window,
+        #    textvariable=text_intermeans_intensity,
+        #    font=("Arial", 16)
+        #).pack(pady=10)
 
         ttk.Label(
             control_window,
             textvariable=text_last_pressed,
             font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Combobox(
+            control_window,
+            textvariable=traj_shape_val
+            values=trajectory.SHAPES
+        ).pack()
+
+        ttk.Label(
+            control_window,
+            text="Amplitude:",
+            font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Entry(
+            control_window,
+            textvariable=traj_amplitude_val
+        ).pack(pady=10)
+
+        ttk.Label(
+            control_window,
+            text="Loops:",
+            font=("Arial", 16)
+        ).pack(pady=10)
+
+        ttk.Entry(
+            control_window,
+            textvariable=traj_loops_val
+        ).pack()
+
+        ttk.Button(
+            control_window,
+            text="Go to trajectory",
+            command=goto_trajectory
         ).pack(pady=10)
 
         ttk.Label(
@@ -320,13 +408,19 @@ def main():
         for i in range(0, len(GLOBAL_KEYS)):
             control_window.bind(GLOBAL_KEYS[i], key_handler)
 
-        # Create grayscale custom output window
+        # Create SLAM output window
         custom_image_window = tk.Toplevel(root)
-        custom_image_window.title("ME4242 Custom Thresholding")
+        custom_image_window.title("ME4242 SLAM")
         custom_image = tk.Label(custom_image_window)
         custom_image.pack()
 
-        teleop.init_motors()
+        # Init motors
+        emio_motors = EmioMotors()
+        if emio_motors.findAndOpen(device_name=None, multi_turn=(GLOBAL_MAX_THETA > SINGLE_TURN_LIMIT)) < 0:
+            raise RuntimeError(f"Could not connect to the Emio motors. Check the USB, "
+                               f"the power supply, and that Emio Labs / other scripts aren't using the port.")
+
+        teleop.init_motors(emio_motors)
         root.after(10, update)
         root.after(50, check_exit)
         root.mainloop()
@@ -335,12 +429,13 @@ def main():
         print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
-    teleop.shutdown()
+    teleop.shutdown(emio_motors)
     if emio_camera:
         emio_camera.close()
+    if emio_motors:
+        emio_motors.close()
     raise SystemExit
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     main()
-

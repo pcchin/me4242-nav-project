@@ -5,6 +5,8 @@ Access to the robot for the data collection and `goto.py`:
     - `FakeRobot`: a made-up 4-cable constant-curvature robot, to test the scripts without hardware.
     - `rampTo()`: safe motion, small angle steps with a motor current check.
 Both robots have the same interface: `angles` (get/set, rad), `currents` (mA), `readTip()`, `close()`.
+
+This variant does not own the EmioMotors object, rather usage of the object is passed within functions when required.
 """
 import time
 import numpy as np
@@ -360,33 +362,43 @@ class EmioMotorsOnly:
     """
 
     CURRENT_UNIT = EmioRobot.CURRENT_UNIT
-    currents = EmioRobot.currents
 
-    def __init__(self, port=None, multiTurn=False):
+    def __init__(self):
         """
         `multiTurn`: extended position mode, needed for angles beyond +-pi (the standard position mode covers one
         turn). The next normal connection (Emio Labs, the other scripts) switches the motors back to position mode.
         """
-        from emioapi.emiomotors import EmioMotors
-        self.motors = EmioMotors()
-        if self.motors.findAndOpen(device_name=port, multi_turn=multiTurn) < 0:
-            raise RuntimeError(f"Could not connect to the Emio motors{' on ' + port if port else ''}. Check the USB, "
-                               f"the power supply, and that Emio Labs / other scripts aren't using the port.")
+        # Multiple EMIOMotorsOnly are present, need to share motor
+        pass
 
-    @property
-    def angles(self):
-        return np.array(self.motors.angles, dtype=float)
+    def angles(self, emio_motors):
+        return np.array(emio_motors.angles, dtype=float)
 
-    @angles.setter
-    def angles(self, value):
+    def set_angles(self, value, emio_motors):
         self.motors.angles = [float(a) for a in value]
+
+    def currents(self, emio_motors):
+        """
+        Motor currents (mA, absolute values). `EmioMotors.currents` fails in emioapi 0.3.0 (its motor configs have no
+        `current_unit`), so the raw register is read and converted. Zeros if that's not possible either (the
+        over-current check is then off).
+        """
+        try:
+            raw = np.array(emio_motors._mg.getPresentCurrent(), dtype=float)
+            raw[raw > 32767] -= 65536  # signed 16-bit register
+            return np.abs(raw * self.CURRENT_UNIT)
+        except Exception as e:
+            if not getattr(self, "_warnedCurrents", False):
+                print(f"WARNING: can't read the motor currents ({e}): the over-current check is off.")
+                self._warnedCurrents = True
+            return np.zeros(4)
 
     def close(self):
         """Close the connection (turns the motors' torque off)."""
-        self.motors.close()
+        pass
 
 
-def rampTo(robot, target, maxStep=config.MAX_STEP, period=config.STEP_PERIOD, maxCurrent=config.MAX_CURRENT,
+def rampTo(robot, target, emio_motors, maxStep=config.MAX_STEP, period=config.STEP_PERIOD, maxCurrent=config.MAX_CURRENT,
            start=None):
     """
     Move to `target` (rad) in steps of at most `maxStep` rad, checking the motor currents at each step.
@@ -394,15 +406,15 @@ def rampTo(robot, target, maxStep=config.MAX_STEP, period=config.STEP_PERIOD, ma
     `start`: last commanded angles (defaults to the measured ones).
     """
     target = np.asarray(target, dtype=float)
-    start = robot.angles if start is None else np.asarray(start, dtype=float)
+    start = robot.angles(emio_motors) if start is None else np.asarray(start, dtype=float)
     nbSteps = max(1, int(np.ceil(np.max(np.abs(target - start)) / maxStep)))
     for k in range(1, nbSteps + 1):
-        robot.angles = start + (target - start) * k / nbSteps
+        robot.set_angles(start + (target - start) * k / nbSteps, emio_motors)
         if period > 0 and not isinstance(robot, FakeRobot):
             time.sleep(period)
-        currents = robot.currents
+        currents = robot.currents(emio_motors)
         if np.any(currents > maxCurrent):
             reached = start + (target - start) * k / nbSteps
-            rampTo(robot, start, maxStep, period, maxCurrent=np.inf, start=reached)
+            rampTo(robot, start, emio_motors, maxStep, period, maxCurrent=np.inf, start=reached)
             raise OverCurrentError(f"Motor current {np.round(currents).tolist()} mA above {maxCurrent} mA")
     return target

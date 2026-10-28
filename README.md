@@ -5,8 +5,14 @@ This project contains the code and CAD files required to model the robot for the
 ## Requirements
 
 - Python 3.12
-- EMIO API (pip install emioapi)
+- EMIO API
 - Tkinkter (depends on system)
+
+As features in this program uses EmioMotors.multi_turn which is not available in version 0.3.0, using 'python -m pip install git+https://github.com/SofaComplianceRobotics/Emio.API.git@release-v0.3.0'
+
+## SLAM Support
+
+To add SLAM support which is required for the commands, the instructions at [[https://github.com/luigifreda/pyslam/blob/master/docs/CONDA.md|pyslam's GitHub page]] can be followed. Do note that this instruction does not apply to Windows devices or a WSL Ubuntu environment is required.
 
 ## Continuum robot lab for Emio Labs
 

@@ -9,10 +9,7 @@ Hold (while this terminal has the focus):
 Opposite cables always work in pairs (one winds, the other releases), so they never fight. Each motor stays within
 +-4 rad (--max-theta; beyond +-pi the motors are switched to multi-turn mode). No motor current limit by default (--max-current to set one); currents are displayed.
 
-Usage (from this folder, in the emio-ml environment; close Emio Labs / SOFA first, they'd hold the port):
-    python teleop.py --port COM12
-    python teleop.py --speed 0.3 --max-theta 1.0  # slower, smaller range
-    python teleop.py --simulate --script "W*30,D*60,R,Q"   # no hardware, scripted keys (test)
+This variant is meant to be used as a library to main.py and should not be ran independently.
 """
 import argparse
 import sys
@@ -33,6 +30,7 @@ MAX_THETA = 4.0  # rad, angle limit of each motor for steering by eye (data coll
 SINGLE_TURN_LIMIT = 3.1  # rad: beyond about +-pi, the motors need their extended (multi-turn) position mode
 MAX_CURRENT = float("inf")  # mA, no limit by default (user's choice); --max-current sets one. The motors still protect
 # themselves (overload error, torque off at 53 degC)
+COMMON_ZERO = np.zeros(4)
 
 robot = None
 commanded = None
@@ -63,21 +61,25 @@ def get_motor_coords():
     global commanded
     return commanded
 
-def set_joint_angles(pos):
-    # TODO: Set joint angles to fixed values
-    pass
+def set_joint_angles(pos, emio_motors):
+    commanded = rampTo(robot, pos, emio_motors, start=commanded, maxCurrent=MAX_CURRENT)
+    reset_bend()
 
-def on_key_pressed(keys_pressed):
+def reset_bend():
+    global bend
+    bend = {"x": 0., "z": 0.}
+
+def on_key_pressed(keys_pressed, emio_motors):
     global commanded
     global bend
 
     if "r" in keys_pressed:
         try:
-            commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=MAX_CURRENT)
-            bend = {"x": 0., "z": 0.}
+            commanded = rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=MAX_CURRENT)
+            reset_bend()
         except OverCurrentError as e:
             print(f"\n{e}: straightening stopped")
-            commanded = robot.angles
+            commanded = robot.angles(emio_motors)
             bend = bendFromAngles(commanded)
         return
     if "q" in keys_pressed:
@@ -88,44 +90,46 @@ def on_key_pressed(keys_pressed):
         newBend = applyKey(newBend, key, step, maxTheta)
     if newBend != bend:
         target = anglesFromBend(newBend)
-        robot.angles = target
-        currents = robot.currents
+        robot.set_angles(target, emio_motors)
+        currents = robot.currents(emio_motors)
         if np.any(currents > MAX_CURRENT):
-            robot.angles = commanded  # undo the step
+            robot.set_angles(commanded, emio_motors)  # undo the step
             print(f"\nMotor current {np.round(currents).tolist()} mA above {MAX_CURRENT:.0f} mA: "
                     f"step undone")
         else:
             commanded, bend = target, newBend
     print(f"\r bend x {bend['x']:+.2f}  z {bend['z']:+.2f} rad | angles "
                     f"{' '.join(f'{a:+.2f}' for a in commanded)} | currents "
-                    f"{' '.join(f'{c:4.0f}' for c in robot.currents)} mA   ", end="", flush=True)
+                    f"{' '.join(f'{c:4.0f}' for c in robot.currents(emio_motors))} mA   ", end="", flush=True)
 
-def shutdown():
+def shutdown(emio_motors):
     global robot
     global commanded
     print("\nStraightening and releasing the motors...")
     try:
-        rampTo(robot, np.zeros(4), start=commanded, maxCurrent=np.inf)
+        rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=np.inf)
     finally:
-        robot.close()
+        # Handled in scripts
+        # robot.close()
+        pass
     print("Done.")
 
 
-def init_motors():
+def init_motors(emio_motors):
     global robot
     global maxTheta
     global step
     global commanded
     global bend
     multiTurn = MAX_THETA > SINGLE_TURN_LIMIT
-    robot = EmioMotorsOnly(multiTurn=multiTurn)
+    robot = EmioMotorsOnly()
     maxTheta, step = MAX_THETA, SPEED / KEY_RATE
     print(__doc__.split("Usage")[0].strip())
     print(f"\nConnected to the real robot (limit +-{maxTheta:g} rad, "
           f"{SPEED:g} rad/s, " + ("multi-turn mode, " if multiTurn else "") + ("no current limit" if MAX_CURRENT == float("inf") else
                                    f"current limit {MAX_CURRENT:g} mA") + "). Straightening first...")
 
-    commanded = robot.angles
-    commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=np.inf)
-    bend = {"x": 0., "z": 0.}
+    commanded = robot.angles(emio_motors)
+    commanded = rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=np.inf)
+    reset_bend()
 
