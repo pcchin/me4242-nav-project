@@ -87,6 +87,13 @@ def reset_bend():
     global bend
     bend = {"x": 0., "z": 0.}
 
+def sync_commanded(emio_motors):
+    """Carry on steering from the motors' current angles (after something else, e.g. a trajectory, moved them)."""
+    global commanded
+    global bend
+    commanded = robot.angles(emio_motors)
+    bend = bendFromAngles(commanded)
+
 def on_key_pressed(keys_pressed, emio_motors):
     global commanded
     global bend

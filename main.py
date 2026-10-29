@@ -21,6 +21,8 @@ fixed_trajectory_in_progress = False
 currently_recording = False
 current_csv_file = None
 current_csv_file_writer = None
+current_recording_name = None
+traj_shape_box = None
 
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
@@ -129,6 +131,9 @@ def key_handler(event):
     global text_last_pressed
     global fixed_trajectory_in_progress
     global emio_motors
+    if event.widget.winfo_class() in ("TEntry", "TCombobox", "Entry"):
+        # Typing a trajectory name / amplitude / loops, not steering
+        return
     if currently_recording:
         text_last_pressed.set("Recording ongoing")
     if fixed_trajectory_in_progress:
@@ -172,11 +177,10 @@ def recording_toggle():
     global text_recording_state
     global currently_recording
     if currently_recording:
-        text_recording_state.set("Start recording")
         currently_recording = stop_recording()
     else:
-        text_recording_state.set("Stop recording")
         currently_recording = start_recording()
+    text_recording_state.set("Stop recording" if currently_recording else "Start recording")
 
 def signal_handler(sig, frame):
     global system_exit
@@ -193,27 +197,39 @@ def check_exit():
 def start_recording():
     global current_csv_file
     global current_csv_file_writer
+    global current_recording_name
     # Filename check
-    filename = traj_shape_val.get()
+    filename = traj_shape_val.get().strip()
+    if len(filename) == 0:
+        print("Type a name for the recording first")
+        return False
     if filename in trajectory.SHAPES:
         print("Existing shape used, unable to start")
         return False
-    current_csv_file = open(filename + '.csv', 'w', newline='')
+    current_csv_file = open(trajectory.recording_path(filename), 'w', newline='')
     current_csv_file_writer = csv.writer(current_csv_file)
-    print("Starting recording to " + filename + ".csv")
+    current_recording_name = filename
+    print("Starting recording to " + trajectory.recording_path(filename))
     return True
 
 # Return False if recording successfully stopped, True otherwise
 def stop_recording():
     global current_csv_file
     global current_csv_file_writer
+    global current_recording_name
     if current_csv_file is not None:
         if current_csv_file:
             current_csv_file.close()
         current_csv_file_writer = None
         current_csv_file = None
+    if current_recording_name is not None:
+        # Saved: add it to the trajectory list so it can be played back straight away
+        if traj_shape_box is not None and current_recording_name not in traj_shape_box["values"]:
+            traj_shape_box["values"] = list(traj_shape_box["values"]) + [current_recording_name]
+        print("Recording saved to " + trajectory.recording_path(current_recording_name))
+        current_recording_name = None
     print("Recording done")
-    return True
+    return False
 
 # Use intermeans to get foreground / background thresholding
 # Threshold lvl = min value diff tolerable by the program
@@ -367,6 +383,7 @@ def main():
     global traj_fast_return_home_val
     global traj_return_when_terminated_val
     global emio_motors
+    global traj_shape_box
 
     # If pass, revert to mode 2
     navigation_mode = RobotMode.CALIBRATING
@@ -384,7 +401,7 @@ def main():
         # Create an additional window
         control_window = tk.Toplevel(root)
         control_window.title("ME4242 Navigation")
-        control_window.geometry("400x600")
+        control_window.geometry("400x800")
 
         text_calibration_status = tk.StringVar(value="Calibration status: " + str(navigation_mode))
         text_home_pos = tk.StringVar(value="Home position: " + str(COORDS_ORIGIN))
@@ -461,11 +478,12 @@ def main():
             font=("Arial", 16)
         ).pack(pady=10)
 
-        ttk.Combobox(
+        traj_shape_box = ttk.Combobox(
             control_window,
             textvariable=traj_shape_val,
-            values=trajectory.SHAPES
-        ).pack()
+            values=trajectory.SHAPES + trajectory.list_recordings()
+        )
+        traj_shape_box.pack()
 
         ttk.Label(
             control_window,
@@ -557,6 +575,8 @@ def main():
         # print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
+    if currently_recording:
+        stop_recording()
     if emio_motors is not None:
         teleop.shutdown(emio_motors)
     if emio_camera:
