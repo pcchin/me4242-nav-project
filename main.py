@@ -1,5 +1,6 @@
 import emioapi
 from emioapi._logging_config import logger
+from emioapi.emiomotors import EmioMotors
 import tkinter as tk
 from tkinter import ttk
 import threading
@@ -10,6 +11,7 @@ import numpy as np
 from enum import Enum
 import teleop
 import trajectory
+from trajectory import get_trajectory_is_active
 from PIL import Image, ImageTk
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
@@ -111,8 +113,13 @@ def key_handler(event):
     global keys_pressed
     global text_last_pressed
     global fixed_trajectory_in_progress
+    global emio_motors
     if fixed_trajectory_in_progress:
-        text_last_pressed.set("Fixed trajectory ongoing")
+        # Only checked for q key
+        if event.char == "q":
+            trajectory.terminate_current(emio_motors)
+        else:
+            text_last_pressed.set("Fixed trajectory ongoing")
         return
     #print(event.char, event.keysym, event.keycode)
     text_last_pressed.set(str(event.char) + " pressed")
@@ -166,6 +173,11 @@ def get_intermeans_intensity(tgt_frame, threshold=2, count_limit=10):
     # FIXME: Saturation thresholding gives correct mean but black frame
     return (prev_means, (255 * (tgt_frame > prev_means)).astype(np.uint8))
 
+def untwist_at_origin():
+    # TODO: Complete
+    # Pull up by approx 0.9 deg to untangle it
+    pass
+
 def update():
     global emio_camera
     global emio_motors
@@ -176,6 +188,7 @@ def update():
     global text_valid_trackers
     global text_error
     global custom_image
+    global fixed_trajectory_in_progress
 
     try:
         emio_camera.update()
@@ -320,6 +333,7 @@ def main():
         text_last_pressed = tk.StringVar(value="No keys pressed")
         traj_amplitude_val = tk.StringVar(value="1.0")
         traj_loops_val = tk.StringVar(value="1")
+        traj_shape_val = tk.StringVar()
 
         #ttk.Label(
         #    control_window,
@@ -359,7 +373,7 @@ def main():
 
         ttk.Combobox(
             control_window,
-            textvariable=traj_shape_val
+            textvariable=traj_shape_val,
             values=trajectory.SHAPES
         ).pack()
 
@@ -421,7 +435,7 @@ def main():
                                f"the power supply, and that Emio Labs / other scripts aren't using the port.")
 
         teleop.init_motors(emio_motors)
-        root.after(10, update)
+        root.after(int(teleop.LOOP_PERIOD * 1000), update)
         root.after(50, check_exit)
         root.mainloop()
 

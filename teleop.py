@@ -11,14 +11,10 @@ Opposite cables always work in pairs (one winds, the other releases), so they ne
 
 This variant is meant to be used as a library to main.py and should not be ran independently.
 """
-import argparse
-import sys
-import time
 
 import numpy as np
 
-import config
-from robot_io import EmioMotorsOnly, FakeRobot, OverCurrentError, rampTo
+from robot_io import EmioMotorsOnly, OverCurrentError, rampTo
 
 PAIRS = {"x": (1, 3), "z": (0, 2)}  # (motor winding toward +, motor winding toward -)
 KEYS = {"w": ("x", 1.), "s": ("x", -1.), "d": ("z", 1.), "a": ("z", -1.)} #W,S,D,A
@@ -51,17 +47,19 @@ def anglesFromBend(bend):
 
 def applyKey(bend, key, step, maxTheta):
     """The bend after one W/S/A/D key event (unchanged for other keys), clamped to +-maxTheta."""
-    bend = dict(bend)
+    d_bend = dict(bend)
     if key in KEYS:
         axis, direction = KEYS[key]
-        bend[axis] = float(np.clip(bend[axis] + direction * step, -maxTheta, maxTheta))
-    return bend
+        d_bend[axis] = float(np.clip(d_bend[axis] + direction * step, -maxTheta, maxTheta))
+    return d_bend
 
 def get_motor_coords():
     global commanded
     return commanded
 
 def set_joint_angles(pos, emio_motors):
+    global commanded
+    global robot
     commanded = rampTo(robot, pos, emio_motors, start=commanded, maxCurrent=MAX_CURRENT)
     reset_bend()
 
@@ -72,6 +70,7 @@ def reset_bend():
 def on_key_pressed(keys_pressed, emio_motors):
     global commanded
     global bend
+    global robot
 
     if "r" in keys_pressed:
         try:
@@ -132,4 +131,3 @@ def init_motors(emio_motors):
     commanded = robot.angles(emio_motors)
     commanded = rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=np.inf)
     reset_bend()
-

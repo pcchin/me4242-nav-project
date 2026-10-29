@@ -1,9 +1,7 @@
 import emioapi
 from emioapi._logging_config import logger
 import tkinter as tk
-from tkinter import ttk
 import threading
-import time
 import signal
 import traceback
 import numpy as np
@@ -219,4 +217,3 @@ if __name__ == "__main__":
         root.destroy()
     else:
         main()
-

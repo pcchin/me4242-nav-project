@@ -18,18 +18,21 @@ Saved trajectories (SAVED below, fixed points and speed, --amplitude ignored):
 
 This variant is meant to be used as a library to main.py and should not be ran independently.
 """
-import argparse
-import time
 
 import numpy as np
 
-from robot_io import EmioMotorsOnly, FakeRobot, rampTo
-from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SINGLE_TURN_LIMIT, SPEED, anglesFromBend, bendFromAngles, reset_bend,COMMON_ZERO
+from robot_io import EmioMotorsOnly, rampTo
+from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SPEED, anglesFromBend, bendFromAngles, reset_bend,COMMON_ZERO
 
 TRAJECTORY_IS_ACTIVE = False
 CURRENT_STAGE = 0 # Stage of angles to be at
+loops = 1 # Default loop count
+CURRENT_LOOP = 0 # Current loop count
+CURRENT_LOOP_I = 0 # i in current loop
+points = []
 
 def get_trajectory_is_active():
+    global TRAJECTORY_IS_ACTIVE
     return TRAJECTORY_IS_ACTIVE
 
 # Saved trajectories: waypoints as the 4 motor angles (rad, motors 0 1 2 3, as teleop.py shows them) and speed (rad/s).
@@ -116,20 +119,61 @@ def resample(points, step):
     return np.array(out), corners
 
 def terminate_current(emio_motors):
+    global robot
+    global commanded
+    global TRAJECTORY_IS_ACTIVE
+    global CURRENT_LOOP
+    global CURRENT_LOOP_I
     rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
+    CURRENT_LOOP = 0
+    CURRENT_LOOP_I = 0
+    print("Trajectory completed / terminated.")
     reset_bend()
     TRAJECTORY_IS_ACTIVE = False
 
 def update(emio_motors):
-    #TODO: Update cycle
-    pass
+    if not TRAJECTORY_IS_ACTIVE:
+        return
+
+    global CURRENT_LOOP
+    global CURRENT_LOOP_I
+    global points
+    global loops
+    if CURRENT_LOOP == loops:
+        terminate_current(emio_motors)
+        return
+
+    (x,z) = points[CURRENT_LOOP_I]
+    commanded = anglesFromBend({"x": x, "z": z})
+    robot.set_angles(commanded, emio_motors)
+    currents = robot.currents(emio_motors)
+    if np.any(currents > MAX_CURRENT):
+        print(f"\nMotor current {np.round(currents).tolist()} mA above {MAX_CURRENT:.0f} mA: stopping")
+        terminate_current(emio_motors)
+        return
+    if CURRENT_LOOP_I % 5 == 0:
+        print(f"\r loop {CURRENT_LOOP + 1}/{CURRENT_LOOP} {100 * CURRENT_LOOP_I / (len(points) - 1):3.0f}% | bend x {x:+.2f}  "
+                f"z {z:+.2f} rad | currents {' '.join(f'{c:4.0f}' for c in currents)} mA   ",
+                end="", flush=True)
+
+    CURRENT_LOOP_I = CURRENT_LOOP_I + 1
+    if CURRENT_LOOP_I >= len(points):
+        CURRENT_LOOP_I = 0
+        CURRENT_LOOP = CURRENT_LOOP + 1
+
 
 def main(args_amplitude, args_loops, args_shape, emio_motors):
-    TRAJECTORY_IS_ACTIVE = True
+    global robot
+    global commanded
+    global TRAJECTORY_IS_ACTIVE
+    global loops
+    global points
+    global CURRENT_LOOP
+    global CURRENT_LOOP_I
+    loops = args_loops
 
     args_pause = 0
     args_max_theta = MAX_THETA
-    args_max_current = MAX_CURRENT
     args_speed = SAVED[args_shape]["speed"] if args_shape in SAVED else SPEED
 
     path = waypoints(args_shape, args_amplitude)
@@ -144,34 +188,15 @@ def main(args_amplitude, args_loops, args_shape, emio_motors):
     holdAt = set(corners) if args_pause > 0 and len(path) < CURVE_POINTS else set()
     loopTime = len(points) * LOOP_PERIOD + len(holdAt) * args_pause
 
-    multiTurn = args_max_theta > SINGLE_TURN_LIMIT
-    robot = EmioMotorsOnly(None, multiTurn=multiTurn)
+    robot = EmioMotorsOnly()
     print(f"{args_shape}: {len(path)} waypoints, up to {np.max(np.abs(path)):.2f} rad, {args_speed:g} rad/s, "
           f"{args_loops} loop(s) of about {loopTime:.0f} s. Press Q (or Ctrl+C) to stop.")
 
-    commanded = robot.angles
-    commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=np.inf)
+    commanded = robot.angles(emio_motors)
+    commanded = rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
     print("Moving to the start of the path...")
-    commanded = rampTo(robot, anglesFromBend({"x": points[0][0], "z": points[0][1]}), start=commanded,
-                        maxStep=args_speed * LOOP_PERIOD, period=LOOP_PERIOD, maxCurrent=args_max_current)
-    stop = False
-    for loop in range(args_loops):
-        for i, (x, z) in enumerate(points):
-            commanded = anglesFromBend({"x": x, "z": z})
-            robot.angles = commanded
-            currents = robot.currents
-            if np.any(currents > args_max_current):
-                print(f"\nMotor current {np.round(currents).tolist()} mA above {args_max_current:.0f} mA: stopping")
-                stop = True
-                break
-            if i % 5 == 0:
-                print(f"\r loop {loop + 1}/{args_loops} {100 * i / (len(points) - 1):3.0f}% | bend x {x:+.2f}  "
-                        f"z {z:+.2f} rad | currents {' '.join(f'{c:4.0f}' for c in currents)} mA   ",
-                        end="", flush=True)
-            time.sleep(LOOP_PERIOD)
-            if i in holdAt:
-                time.sleep(args_pause)
-        if stop:
-            break
-    print("\nTrajectory " + ("stopped." if stop else "done."))
-
+    commanded = rampTo(robot, anglesFromBend({"x": points[0][0], "z": points[0][1]}), emio_motors, start=commanded,
+                        maxStep=args_speed * LOOP_PERIOD, period=LOOP_PERIOD, maxCurrent=MAX_CURRENT)
+    TRAJECTORY_IS_ACTIVE = True # Locks motor control away from keyboard
+    CURRENT_LOOP = 0
+    CURRENT_LOOP_I = 0

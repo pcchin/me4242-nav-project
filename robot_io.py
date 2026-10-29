@@ -193,7 +193,7 @@ class EmioRobot:
         cameras = EmioCamera.listCameras()
         index = self.motors.device_index
         serial = cameras[index] if cameras and index is not None and index < len(cameras) else None
-        if not self.camera.open(serial):
+        if serial is not None and not self.camera.open(serial):
             self.motors.close()
             raise RuntimeError("Could not open the depth camera.")
 
@@ -354,6 +354,10 @@ class EmioRobot:
         finally:
             self.motors.close()
 
+    def set_angles(self, value, emio_motors):
+        # Dummy function
+        pass
+
 
 class EmioMotorsOnly:
     """
@@ -375,7 +379,7 @@ class EmioMotorsOnly:
         return np.array(emio_motors.angles, dtype=float)
 
     def set_angles(self, value, emio_motors):
-        self.motors.angles = [float(a) for a in value]
+        emio_motors.angles = [float(a) for a in value]
 
     def currents(self, emio_motors):
         """
