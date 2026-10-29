@@ -22,7 +22,7 @@ This variant is meant to be used as a library to main.py and should not be ran i
 import numpy as np
 
 from robot_io import EmioMotorsOnly, rampTo
-from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SPEED, anglesFromBend, bendFromAngles, reset_bend,COMMON_ZERO
+from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SPEED, anglesFromBend, bendFromAngles, reset_bend,get_common_zero
 
 TRAJECTORY_IS_ACTIVE = False
 CURRENT_STAGE = 0 # Stage of angles to be at
@@ -75,7 +75,8 @@ SAVED = {
 # SHAPES = ["circle", "square", "figure8", "cross", "custom"] + list(SAVED)
 SHAPES = ["circle", "square", "figure8", "cross"] + list(SAVED)
 CURVE_POINTS = 200  # points per loop of the smooth shapes
-
+robot = EmioMotorsOnly()
+commanded = None
 
 def savedWaypoints(name):
     """A saved trajectory's motor angles as bends (n, 2); refuses angles whose opposite motors aren't opposite."""
@@ -108,7 +109,6 @@ def waypoints(shape, amplitude, custom=None):
         return np.array([[float(v) for v in point.split(",")] for point in custom.split(";") if point.strip()])
     raise SystemExit(f"unknown shape {shape}, choose from {SHAPES}")
 
-
 def resample(points, step):
     """Points along the polyline every `step` rad (constant speed), with the indices of the original corners."""
     out, corners = [points[0]], [0]
@@ -118,13 +118,19 @@ def resample(points, step):
         corners.append(len(out) - 1)
     return np.array(out), corners
 
-def terminate_current(emio_motors):
+def terminate_current(emio_motors, ignore_speed_limit = False):
     global robot
     global commanded
     global TRAJECTORY_IS_ACTIVE
     global CURRENT_LOOP
     global CURRENT_LOOP_I
-    rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
+
+    if commanded is None:
+        commanded = robot.angles(emio_motors)
+    if ignore_speed_limit:
+        robot.set_angles(get_common_zero(), emio_motors)
+    else:
+        rampTo(robot, get_common_zero(), emio_motors, start=commanded, maxCurrent=np.inf)
     CURRENT_LOOP = 0
     CURRENT_LOOP_I = 0
     print("Trajectory completed / terminated.")
@@ -132,6 +138,7 @@ def terminate_current(emio_motors):
     TRAJECTORY_IS_ACTIVE = False
 
 def update(emio_motors):
+    global robot
     if not TRAJECTORY_IS_ACTIVE:
         return
 
@@ -188,7 +195,6 @@ def main(args_amplitude, args_loops, args_shape, emio_motors):
     holdAt = set(corners) if args_pause > 0 and len(path) < CURVE_POINTS else set()
     loopTime = len(points) * LOOP_PERIOD + len(holdAt) * args_pause
 
-    robot = EmioMotorsOnly()
     print(f"{args_shape}: {len(path)} waypoints, up to {np.max(np.abs(path)):.2f} rad, {args_speed:g} rad/s, "
           f"{args_loops} loop(s) of about {loopTime:.0f} s. Press Q (or Ctrl+C) to stop.")
 

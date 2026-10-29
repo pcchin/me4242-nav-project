@@ -13,6 +13,7 @@ import teleop
 import trajectory
 from trajectory import get_trajectory_is_active
 from PIL import Image, ImageTk
+import robot_io
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]
@@ -22,6 +23,7 @@ fixed_trajectory_in_progress = False
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
 COORDS_ORIGIN_JOINT_POS = [0,0,0,0]
+UNTWIST_ANGLES = 2
 
 GLOBAL_MAX_THETA = teleop.MAX_THETA  # rad, angle limit of each motor for steering by eye (data collection keeps config.MAX_THETA)
 SINGLE_TURN_LIMIT = 3.1  # rad: beyond about +-pi, the motors need their extended (multi-turn) position mode
@@ -99,15 +101,17 @@ def set_home_pos():
         return
     COORDS_ORIGIN = current_end_effector_coords
     text_home_pos.set("Home position: " + str(COORDS_ORIGIN))
-    COORDS_ORIGIN_JOINT_POS = teleop.get_motor_coords()
+    COORDS_ORIGIN_JOINT_POS = emio_motors.angles
     text_home_joints.set("Home joints: " + str(COORDS_ORIGIN_JOINT_POS))
+    teleop.set_common_home(COORDS_ORIGIN_JOINT_POS)
 
 def return_home_direct():
     global COORDS_ORIGIN_JOINT_POS
     global fixed_trajectory_in_progress
     if fixed_trajectory_in_progress:
         return
-    teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS, emio_motors)
+    # teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS, emio_motors)
+    trajectory.terminate_current(emio_motors, True)
 
 def key_handler(event):
     global keys_pressed
@@ -174,9 +178,19 @@ def get_intermeans_intensity(tgt_frame, threshold=2, count_limit=10):
     return (prev_means, (255 * (tgt_frame > prev_means)).astype(np.uint8))
 
 def untwist_at_origin():
+    global emio_motors
     # TODO: Complete
     # Pull up by approx 0.9 deg to untangle it
-    pass
+    if fixed_trajectory_in_progress:
+        text_last_pressed.set("Fixed trajectory ongoing")
+        return
+    # This violates bending regulations, do not tell teleop
+    trajectory.terminate_current(emio_motors)
+    temp_tgt = teleop.get_common_zero() - [UNTWIST_ANGLES, UNTWIST_ANGLES, UNTWIST_ANGLES, UNTWIST_ANGLES]
+    robot = robot_io.EmioMotorsOnly()
+    robot_io.rampTo(robot, temp_tgt, emio_motors)
+    # Uncoil back
+    trajectory.terminate_current(emio_motors)
 
 def update():
     global emio_camera
@@ -341,17 +355,17 @@ def main():
         #    font=("Arial", 16)
         #).pack(pady=10)
 
-        #ttk.Label(
-        #    control_window,
-        #    textvariable=text_home_pos,
-        #    font=("Arial", 16)
-        #).pack(pady=10)
+        ttk.Label(
+            control_window,
+            textvariable=text_home_pos,
+            font=("Arial", 16)
+        ).pack(pady=10)
 
-        #ttk.Label(
-        #    control_window,
-        #    textvariable=text_home_joints,
-        #    font=("Arial", 16)
-        #).pack(pady=10)
+        ttk.Label(
+            control_window,
+            textvariable=text_home_joints,
+            font=("Arial", 16)
+        ).pack(pady=10)
 
         ttk.Label(
             control_window,
@@ -404,6 +418,12 @@ def main():
             text="Go to trajectory",
             command=goto_trajectory
         ).pack(pady=10)
+
+        #ttk.Button(
+        #    control_window,
+        #    text="Untwist at origin",
+        #    command=untwist_at_origin
+        #).pack(pady=10)
 
         ttk.Label(
             control_window,

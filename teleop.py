@@ -28,7 +28,7 @@ MAX_CURRENT = float("inf")  # mA, no limit by default (user's choice); --max-cur
 # themselves (overload error, torque off at 53 degC)
 COMMON_ZERO = np.zeros(4)
 
-robot = None
+robot = EmioMotorsOnly()
 commanded = None
 bend = None
 
@@ -36,6 +36,9 @@ def bendFromAngles(theta):
     """Bend toward +x and +z (rad) from the 4 motor angles."""
     return {axis: (theta[plus] - theta[minus]) / 2. for axis, (plus, minus) in PAIRS.items()}
 
+def get_common_zero():
+    global COMMON_ZERO
+    return COMMON_ZERO
 
 def anglesFromBend(bend):
     """The 4 motor angles for a bend: each pair winds one cable and releases the other by the same angle."""
@@ -57,6 +60,10 @@ def get_motor_coords():
     global commanded
     return commanded
 
+def set_common_home(pose):
+    global COMMON_ZERO
+    COMMON_ZERO = pose
+
 def set_joint_angles(pos, emio_motors):
     global commanded
     global robot
@@ -74,7 +81,7 @@ def on_key_pressed(keys_pressed, emio_motors):
 
     if "r" in keys_pressed:
         try:
-            commanded = rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=MAX_CURRENT)
+            commanded = rampTo(robot, get_common_zero(), emio_motors, start=commanded, maxCurrent=MAX_CURRENT)
             reset_bend()
         except OverCurrentError as e:
             print(f"\n{e}: straightening stopped")
@@ -106,7 +113,7 @@ def shutdown(emio_motors):
     global commanded
     print("\nStraightening and releasing the motors...")
     try:
-        rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=np.inf)
+        rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
     finally:
         # Handled in scripts
         # robot.close()
@@ -121,7 +128,6 @@ def init_motors(emio_motors):
     global commanded
     global bend
     multiTurn = MAX_THETA > SINGLE_TURN_LIMIT
-    robot = EmioMotorsOnly()
     maxTheta, step = MAX_THETA, SPEED / KEY_RATE
     print(__doc__.split("Usage")[0].strip())
     print(f"\nConnected to the real robot (limit +-{maxTheta:g} rad, "
@@ -129,5 +135,5 @@ def init_motors(emio_motors):
                                    f"current limit {MAX_CURRENT:g} mA") + "). Straightening first...")
 
     commanded = robot.angles(emio_motors)
-    commanded = rampTo(robot, COMMON_ZERO, emio_motors, start=commanded, maxCurrent=np.inf)
+    commanded = rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
     reset_bend()
