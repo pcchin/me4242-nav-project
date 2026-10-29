@@ -3,7 +3,9 @@ Run a hardcoded trajectory on the real continuum robot: no camera, no model, no 
 
 The trajectory is a path of bends (x, z) in rad, the same bends as teleop.py's W/S (x) and D/A (z): each opposite pair
 winds one cable and releases the other by the same angle (x = motors 1/3, z = motors 0/2). The robot moves along the
-path at a constant speed, starting and ending straight. Press Q (or Ctrl+C) to stop: it straightens and releases.
+path at a constant speed, starting straight. At the end it stays where the path ends and switches to W/A/S/D steering
+(as teleop.py) from there; Q then straightens and releases (--no-teleop: straighten and quit at the end instead).
+Press Q (or Ctrl+C) during the path to stop: it straightens and releases.
 
 Shapes (scaled by --amplitude, rad):
     circle    a circle around the axis
@@ -15,7 +17,18 @@ Saved trajectories (SAVED below, fixed points and speed, --amplitude ignored):
     trajectory1   5 points from the user, 0.6 rad/s, ends straight
     trajectory2   bend toward -x (motor 1 at -2.27 rad) and back, 0.6 rad/s
     trajectory3   10 points from the user, up to 2.57 rad, 0.6 rad/s, ends straight
-    (add your own to SAVED as motor angles)
+    trajectory4   bend toward -x/-z (motors -2.37 -1.70 +2.37 +1.70) and back, 0.6 rad/s
+    trajectory5   bend further toward -x/-z (motors -2.60 -3.30 +2.60 +3.30, multi-turn) and back, 0.6 rad/s
+    trajectory6   2 points toward -x/-z (motors -1.57 -1.67 +1.57 +1.67, then -2.40 -2.23 +2.40 +2.23), 0.6 rad/s, ends straight
+    testnum1      10 points from the user, up to 2.33 rad, 0.6 rad/s, ends straight
+    traj1         6 points from the user, up to 3.10 rad, 2 s pause at point 4, 0.6 rad/s, ends straight
+    traj2         3 points from the user (-x/+z, further +z, then over to +x, 3.24 rad multi-turn), 0.6 rad/s, stays at the last point
+    trajx         2 points from the user toward -x/-z, up to 2.53 rad, 0.6 rad/s, ends straight
+    traj3         2 points from the user (-z, then across from -x to +x), up to 2.57 rad, 0.6 rad/s, stays at the last point
+    traj4         2 points from the user (-z, then across to +z/-x), up to 3.73 rad (multi-turn), 0.6 rad/s, stays at the last point
+    traj5         2 points from the user (-z, then -z/+x), up to 3.80 rad (multi-turn), 0.6 rad/s, stays at the last point
+    traj6         3 points from the user (-z, then over to +z/-x, then +z/+x), up to 2.77 rad, 0.6 rad/s, stays at the last point
+    (add your own to SAVED as motor angles; optional "pauses": {waypoint number: seconds})
 
 Usage (from this folder, in the emio-ml environment; close Emio Labs / SOFA first, they'd hold the port):
     python trajectory.py circle --port COM12
@@ -30,7 +43,8 @@ import time
 import numpy as np
 
 from robot_io import EmioMotorsOnly, FakeRobot, rampTo
-from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SINGLE_TURN_LIMIT, SPEED, TerminalKeys, anglesFromBend, bendFromAngles
+from teleop import (KEY_RATE, LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SINGLE_TURN_LIMIT, SPEED, TerminalKeys,
+                    anglesFromBend, bendFromAngles, steer)
 
 # Saved trajectories: waypoints as the 4 motor angles (rad, motors 0 1 2 3, as teleop.py shows them) and speed (rad/s).
 # Opposite motors must be opposite (motor 2 = -motor 0, motor 3 = -motor 1). To add one, copy a block and rename it.
@@ -64,6 +78,100 @@ SAVED = {
             [-1.27, +2.57, +1.27, -2.57],
             [+1.07, +2.57, -1.07, -2.57],
             [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "trajectory4": {
+        "angles": [
+            [-2.37, -1.70, +2.37, +1.70],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "trajectory5": {
+        "angles": [
+            [-2.60, -3.30, +2.60, +3.30],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "trajectory6": {
+        "angles": [
+            [-1.57, -1.67, +1.57, +1.67],
+            [-2.40, -2.23, +2.40, +2.23],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "testnum1": {
+        "angles": [
+            [-1.57, -1.57, +1.57, +1.57],
+            [-1.13, -2.33, +1.13, +2.33],
+            [+1.13, -2.33, -1.13, +2.33],
+            [+0.83, -1.13, -0.83, +1.13],
+            [+0.47, +1.20, -0.47, -1.20],
+            [+0.47, +2.17, -0.47, -2.17],
+            [-0.17, +0.03, +0.17, -0.03],
+            [-0.17, -1.70, +0.17, +1.70],
+            [-1.60, -2.30, +1.60, +2.30],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "traj1": {
+        "angles": [
+            [+0.00, -2.73, -0.00, +2.73],
+            [+3.10, -2.53, -3.10, +2.53],
+            [+3.10, -1.10, -3.10, +1.10],
+            [-2.00, -1.10, +2.00, +1.10],
+            [-2.00, -2.30, +2.00, +2.30],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "pauses": {4: 2.0},  # waypoint number (from 1): seconds held there
+        "speed": 0.6,
+    },
+    "traj2": {
+        "angles": [
+            [+0.90, -2.23, -0.90, +2.23],
+            [+1.97, -2.23, -1.97, +2.23],
+            [+1.97, +3.24, -1.97, -3.24],
+        ],
+        "speed": 0.6,
+    },
+    "trajx": {
+        "angles": [
+            [-2.53, +0.00, +2.53, -0.00],
+            [-2.53, -2.53, +2.53, +2.53],
+            [+0.00, +0.00, +0.00, +0.00],
+        ],
+        "speed": 0.6,
+    },
+    "traj3": {
+        "angles": [
+            [-2.57, -0.50, +2.57, +0.50],
+            [-2.57, +2.17, +2.57, -2.17],
+        ],
+        "speed": 0.6,
+    },
+    "traj4": {
+        "angles": [
+            [-3.63, -0.80, +3.63, +0.80],
+            [+3.23, -3.73, -3.23, +3.73],
+        ],
+        "speed": 0.6,
+    },
+    "traj5": {
+        "angles": [
+            [-3.80, +0.00, +3.80, -0.00],
+            [-2.27, +0.93, +2.27, -0.93],
+        ],
+        "speed": 0.6,
+    },
+    "traj6": {
+        "angles": [
+            [-2.43, +0.00, +2.43, -0.00],
+            [+1.70, -0.97, -1.70, +0.97],
+            [+2.77, +1.27, -2.77, -1.27],
         ],
         "speed": 0.6,
     },
@@ -128,6 +236,8 @@ def main():
     parser.add_argument("--max-current", type=float, default=MAX_CURRENT,
                         help="mA, stop when a motor goes above (default: no limit)")
     parser.add_argument("--simulate", action="store_true", help="made-up robot instead of the hardware")
+    parser.add_argument("--no-teleop", action="store_true",
+                        help="at the end, straighten and quit instead of steering with W/A/S/D from there")
     args = parser.parse_args()
 
     if args.speed is None:
@@ -137,8 +247,10 @@ def main():
         raise SystemExit(f"the path needs {np.max(np.abs(path)):.2f} rad on a motor, above the limit "
                          f"{args.max_theta:g} rad (--max-theta)")
     points, corners = resample(path, args.speed * LOOP_PERIOD)
-    holdAt = set(corners) if args.pause > 0 and len(path) < CURVE_POINTS else set()
-    loopTime = len(points) * LOOP_PERIOD + len(holdAt) * args.pause
+    holdAt = {c: args.pause for c in corners} if args.pause > 0 and len(path) < CURVE_POINTS else {}
+    for number, seconds in SAVED.get(args.shape, {}).get("pauses", {}).items():
+        holdAt[corners[number - 1]] = seconds
+    loopTime = len(points) * LOOP_PERIOD + sum(holdAt.values())
 
     multiTurn = args.max_theta > SINGLE_TURN_LIMIT
     robot = FakeRobot() if args.simulate else EmioMotorsOnly(args.port, multiTurn=multiTurn)
@@ -172,10 +284,14 @@ def main():
                 if not args.simulate:
                     time.sleep(LOOP_PERIOD)
                     if i in holdAt:
-                        time.sleep(args.pause)
+                        time.sleep(holdAt[i])
             if stop:
                 break
         print("\nTrajectory " + ("stopped." if stop else "done."))
+        if not stop and not args.no_teleop:
+            print("Steering from here (as teleop.py): hold W/S (x), D/A (z), 1-8 one motor, R to straighten, Q to quit.")
+            commanded = steer(robot, keys, commanded, args.max_theta, SPEED / KEY_RATE, args.max_current,
+                              sleep=not args.simulate)
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

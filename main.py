@@ -14,8 +14,8 @@ from PIL import Image, ImageTk
 import robot_io
 import csv
 
-GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
-keys_pressed = [False, False, False, False, False, False]
+GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r', '1', '2', '3', '4', '5', '6', '7', '8']  # 1-8: one motor, see teleop.MOTOR_KEYS
+keys_pressed = [False] * len(GLOBAL_KEYS)
 system_exit = False
 fixed_trajectory_in_progress = False
 currently_recording = False
@@ -328,7 +328,7 @@ def update():
         # Check keyboard input
         if (not fixed_trajectory_in_progress) and any(keys_pressed):
             teleop.on_key_pressed([GLOBAL_KEYS[j] for j in range(0, len(GLOBAL_KEYS)) if keys_pressed[j] == True], emio_motors)
-        keys_pressed = [False, False, False, False, False, False]
+        keys_pressed = [False] * len(GLOBAL_KEYS)
         # Motor updates are handled by the teleop side
         trajectory.update(emio_motors)
 

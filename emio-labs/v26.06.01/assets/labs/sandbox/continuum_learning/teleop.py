@@ -4,9 +4,12 @@ Steer the real continuum robot by eye with the keyboard, from this terminal: no 
 Hold (while this terminal has the focus):
     W / S   bend toward +x / -x   (motor 1 winds and motor 3 releases, or the reverse)
     D / A   bend toward +z / -z   (motor 0 winds and motor 2 releases, or the reverse)
+    1 / 2   motor 1 winds / releases (alone)      3 / 4   motor 2      5 / 6   motor 3      7 / 8   motor 4
+            (motors numbered 1-4 here, 0-3 in the code and the angles display, which lists them in order)
     R       back to straight (all motors at 0)
     Q       quit (back to straight, motors released); Ctrl+C does the same
-Opposite cables always work in pairs (one winds, the other releases), so they never fight. Each motor stays within
+With W/A/S/D, opposite cables work in pairs (one winds, the other releases), so they never fight; with 1-8 a single
+motor moves, so watch the opposite cable (it can go slack, or fight if both are wound). Each motor stays within
 +-4 rad (--max-theta; beyond +-pi the motors are switched to multi-turn mode). No motor current limit by default (--max-current to set one); currents are displayed.
 
 Usage (from this folder, in the emio-ml environment; close Emio Labs / SOFA first, they'd hold the port):
@@ -25,6 +28,8 @@ from robot_io import EmioMotorsOnly, FakeRobot, OverCurrentError, rampTo
 
 PAIRS = {"x": (1, 3), "z": (0, 2)}  # (motor winding toward +, motor winding toward -)
 KEYS = {"W": ("x", 1.), "S": ("x", -1.), "D": ("z", 1.), "A": ("z", -1.)}
+MOTOR_KEYS = {"1": (0, 1.), "2": (0, -1.), "3": (1, 1.), "4": (1, -1.),  # (motor index, wind + / release -)
+              "5": (2, 1.), "6": (2, -1.), "7": (3, 1.), "8": (3, -1.)}
 KEY_RATE = 30.  # key-repeat events per second while a key is held (Windows default, about 30)
 LOOP_PERIOD = 0.02  # s
 RELEASED_AFTER = 0.6  # s without key events: the keys are released (longer than the first key-repeat delay)
@@ -48,13 +53,21 @@ def anglesFromBend(bend):
     return theta
 
 
-def applyKey(bend, key, step, maxTheta):
-    """The bend after one W/S/A/D key event (unchanged for other keys), clamped to +-maxTheta."""
-    bend = dict(bend)
+def applyKey(theta, key, step, maxTheta):
+    """
+    The 4 motor angles after one key event, clamped to +-maxTheta (unchanged for other keys): W/S/A/D move an opposite
+    pair (one winds and the other releases by `step`), 1-8 a single motor.
+    """
+    theta = np.array(theta, dtype=float)
     if key in KEYS:
         axis, direction = KEYS[key]
-        bend[axis] = float(np.clip(bend[axis] + direction * step, -maxTheta, maxTheta))
-    return bend
+        plus, minus = PAIRS[axis]
+        theta[plus] += direction * step
+        theta[minus] -= direction * step
+    elif key in MOTOR_KEYS:
+        motor, direction = MOTOR_KEYS[key]
+        theta[motor] += direction * step
+    return np.clip(theta, -maxTheta, maxTheta)
 
 
 class TerminalKeys:
@@ -88,6 +101,60 @@ class ScriptKeys:
         return self.queue.pop(0) if self.queue else ["Q"]
 
 
+def steer(robot, keys, commanded, maxTheta, step, maxCurrent, printAll=False, sleep=True):
+    """
+    The W/A/S/D steering loop, starting from the `commanded` angles (the robot already there), until Q or Ctrl+C.
+    Returns the last commanded angles (the caller straightens and releases). Also used by trajectory.py.
+    """
+    commanded = np.array(commanded, dtype=float)
+    blocked, lastKeyTime, lastPrint = set(), 0., 0.
+    try:
+        while True:
+            pressed = keys.read()
+            now = time.time()
+            if pressed:
+                lastKeyTime = now
+            elif now - lastKeyTime > RELEASED_AFTER:
+                blocked.clear()  # the keys have been released
+
+            if "Q" in pressed:
+                break
+            if "R" in pressed:
+                try:
+                    commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=maxCurrent)
+                except OverCurrentError as e:
+                    print(f"\n{e}: straightening stopped")
+                    commanded = robot.angles
+                continue
+
+            target = commanded
+            for key in pressed:
+                if key not in blocked:
+                    target = applyKey(target, key, step, maxTheta)
+            if not np.array_equal(target, commanded):
+                robot.angles = target
+                currents = robot.currents
+                if np.any(currents > maxCurrent):
+                    robot.angles = commanded  # undo the step
+                    blocked.update(k for k in pressed if k in KEYS or k in MOTOR_KEYS)
+                    print(f"\nMotor current {np.round(currents).tolist()} mA above {maxCurrent:.0f} mA: "
+                          f"step undone, release the key")
+                else:
+                    commanded = target
+
+            if now - lastPrint > 0.1 or printAll:
+                lastPrint = now
+                bend = bendFromAngles(commanded)
+                print(f"\r bend x {bend['x']:+.2f}  z {bend['z']:+.2f} rad | angles "
+                      f"{' '.join(f'{a:+.2f}' for a in commanded)} | currents "
+                      f"{' '.join(f'{c:4.0f}' for c in robot.currents)} mA   ", end="", flush=True)
+            if sleep:
+                time.sleep(LOOP_PERIOD)
+    except KeyboardInterrupt:
+        pass
+    return commanded
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=None, help="serial port of the robot, e.g. COM12 (default: first found)")
@@ -111,51 +178,8 @@ def main():
     commanded = robot.angles
     try:
         commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=np.inf)
-        bend = {"x": 0., "z": 0.}
-        blocked, lastKeyTime, lastPrint = set(), 0., 0.
-        while True:
-            pressed = keys.read()
-            now = time.time()
-            if pressed:
-                lastKeyTime = now
-            elif now - lastKeyTime > RELEASED_AFTER:
-                blocked.clear()  # the keys have been released
-
-            if "Q" in pressed:
-                break
-            if "R" in pressed:
-                try:
-                    commanded = rampTo(robot, np.zeros(4), start=commanded, maxCurrent=args.max_current)
-                    bend = {"x": 0., "z": 0.}
-                except OverCurrentError as e:
-                    print(f"\n{e}: straightening stopped")
-                    commanded = robot.angles
-                    bend = bendFromAngles(commanded)
-                continue
-
-            newBend = bend
-            for key in pressed:
-                if key not in blocked:
-                    newBend = applyKey(newBend, key, step, maxTheta)
-            if newBend != bend:
-                target = anglesFromBend(newBend)
-                robot.angles = target
-                currents = robot.currents
-                if np.any(currents > args.max_current):
-                    robot.angles = commanded  # undo the step
-                    blocked.update(k for k in pressed if k in KEYS)
-                    print(f"\nMotor current {np.round(currents).tolist()} mA above {args.max_current:.0f} mA: "
-                          f"step undone, release the key")
-                else:
-                    commanded, bend = target, newBend
-
-            if now - lastPrint > 0.1 or args.script:
-                lastPrint = now
-                print(f"\r bend x {bend['x']:+.2f}  z {bend['z']:+.2f} rad | angles "
-                      f"{' '.join(f'{a:+.2f}' for a in commanded)} | currents "
-                      f"{' '.join(f'{c:4.0f}' for c in robot.currents)} mA   ", end="", flush=True)
-            if not args.simulate:
-                time.sleep(LOOP_PERIOD)
+        commanded = steer(robot, keys, commanded, maxTheta, step, args.max_current, printAll=bool(args.script),
+                          sleep=not args.simulate)
     except KeyboardInterrupt:
         pass
     finally:
