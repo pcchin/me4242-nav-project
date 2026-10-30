@@ -13,7 +13,6 @@ from trajectory import get_trajectory_is_active
 from PIL import Image, ImageTk
 import robot_io
 import csv
-import os
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]

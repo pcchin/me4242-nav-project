@@ -20,6 +20,7 @@ This variant is meant to be used as a library to main.py and should not be ran i
 """
 
 import numpy as np
+import csv
 
 from robot_io import EmioMotorsOnly, rampTo
 from teleop import LOOP_PERIOD, MAX_CURRENT, MAX_THETA, SPEED, anglesFromBend, bendFromAngles, reset_bend,get_common_zero
@@ -193,27 +194,40 @@ def main(args_amplitude, args_loops, args_shape, args_reverse, args_return_after
     global CURRENT_REVERSED
     global CURRENT_RETURN_HOME_AT_END
     loops = args_loops
-
     args_pause = 0
-    args_max_theta = MAX_THETA
-    args_speed = SAVED[args_shape]["speed"] if args_shape in SAVED else SPEED
-    CURRENT_REVERSED = args_reverse
-    CURRENT_RETURN_HOME_AT_END = args_return_after_done
 
-    path = waypoints(args_shape, args_amplitude)
+    if args_shape in SAVED:
+        # Fixed shape and trajectories
+        args_max_theta = MAX_THETA
+        args_speed = SAVED[args_shape]["speed"]
+        CURRENT_REVERSED = args_reverse
+        CURRENT_RETURN_HOME_AT_END = args_return_after_done
 
-    if np.max(np.abs(path)) > args_max_theta:
-        print(f"the path needs {np.max(np.abs(path)):.2f} rad on a motor, above the limit "
-                         f"{args_max_theta:g} rad (--max-theta)")
-        terminate_current(emio_motors)
-        return
+        path = waypoints(args_shape, args_amplitude)
 
-    points, corners = resample(path, args_speed * LOOP_PERIOD)
-    holdAt = set(corners) if args_pause > 0 and len(path) < CURVE_POINTS else set()
-    loopTime = len(points) * LOOP_PERIOD + len(holdAt) * args_pause
+        if np.max(np.abs(path)) > args_max_theta:
+            print(f"the path needs {np.max(np.abs(path)):.2f} rad on a motor, above the limit "
+                             f"{args_max_theta:g} rad (--max-theta)")
+            terminate_current(emio_motors)
+            return
 
-    print(f"{args_shape}: {len(path)} waypoints, up to {np.max(np.abs(path)):.2f} rad, {args_speed:g} rad/s, "
-          f"{args_loops} loop(s) of about {loopTime:.0f} s. Press Q (or Ctrl+C) to stop.")
+        points, corners = resample(path, args_speed * LOOP_PERIOD)
+        holdAt = set(corners) if args_pause > 0 and len(path) < CURVE_POINTS else set()
+
+        loopTime = len(points) * LOOP_PERIOD + len(holdAt) * args_pause
+
+        print(f"{args_shape}: {len(path)} waypoints, up to {np.max(np.abs(path)):.2f} rad, {args_speed:g} rad/s, "
+              f"{args_loops} loop(s) of about {loopTime:.0f} s. Press Q (or Ctrl+C) to stop.")
+    else:
+        holdAt = set()
+        points = []
+        with open(args_shape + ".csv", "r") as f:
+            data = csv.reader(f)
+            for r in data:
+                if r is not None and len(r) > 0:
+                    points.append([float(r[0]), float(r[1])])
+        args_speed = SPEED
+        print("Trajectory " + args_shape + "loaded with " + len(points) + " points.")
 
     commanded = robot.angles(emio_motors)
     commanded = rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
