@@ -29,6 +29,8 @@ CURRENT_STAGE = 0 # Stage of angles to be at
 loops = 1 # Default loop count
 CURRENT_LOOP = 0 # Current loop count
 CURRENT_LOOP_I = 0 # i in current loop
+CURRENT_REVERSED = False # Current trajectory is reversed
+CURRENT_RETURN_HOME_AT_END = True # Return home after trajectory is done
 points = []
 
 def get_trajectory_is_active():
@@ -118,21 +120,28 @@ def resample(points, step):
         corners.append(len(out) - 1)
     return np.array(out), corners
 
-def terminate_current(emio_motors, ignore_speed_limit = False):
+def terminate_current(emio_motors, ignore_speed_limit = False, return_home_at_end=CURRENT_RETURN_HOME_AT_END):
     global robot
     global commanded
     global TRAJECTORY_IS_ACTIVE
     global CURRENT_LOOP
     global CURRENT_LOOP_I
+    global CURRENT_REVERSED
+    global CURRENT_RETURN_HOME_AT_END
 
     if commanded is None:
         commanded = robot.angles(emio_motors)
-    if ignore_speed_limit:
-        robot.set_angles(get_common_zero(), emio_motors)
+    if return_home_at_end:
+        if ignore_speed_limit:
+            robot.set_angles(get_common_zero(), emio_motors)
+        else:
+            rampTo(robot, get_common_zero(), emio_motors, start=commanded, maxCurrent=np.inf)
     else:
-        rampTo(robot, get_common_zero(), emio_motors, start=commanded, maxCurrent=np.inf)
+        print("Will not return home")
     CURRENT_LOOP = 0
     CURRENT_LOOP_I = 0
+    CURRENT_REVERSED = False
+    CURRENT_RETURN_HOME_AT_END = True
     print("Trajectory completed / terminated.")
     reset_bend()
     TRAJECTORY_IS_ACTIVE = False
@@ -144,13 +153,17 @@ def update(emio_motors):
 
     global CURRENT_LOOP
     global CURRENT_LOOP_I
+    global CURRENT_REVERSED
     global points
     global loops
     if CURRENT_LOOP == loops:
         terminate_current(emio_motors)
         return
 
-    (x,z) = points[CURRENT_LOOP_I]
+    if CURRENT_REVERSED:
+        (x,z) = points[len(points) - CURRENT_LOOP_I - 1]
+    else:
+        (x,z) = points[CURRENT_LOOP_I]
     commanded = anglesFromBend({"x": x, "z": z})
     robot.set_angles(commanded, emio_motors)
     currents = robot.currents(emio_motors)
@@ -169,7 +182,7 @@ def update(emio_motors):
         CURRENT_LOOP = CURRENT_LOOP + 1
 
 
-def main(args_amplitude, args_loops, args_shape, emio_motors):
+def main(args_amplitude, args_loops, args_shape, args_reverse, args_return_after_done, emio_motors):
     global robot
     global commanded
     global TRAJECTORY_IS_ACTIVE
@@ -177,11 +190,15 @@ def main(args_amplitude, args_loops, args_shape, emio_motors):
     global points
     global CURRENT_LOOP
     global CURRENT_LOOP_I
+    global CURRENT_REVERSED
+    global CURRENT_RETURN_HOME_AT_END
     loops = args_loops
 
     args_pause = 0
     args_max_theta = MAX_THETA
     args_speed = SAVED[args_shape]["speed"] if args_shape in SAVED else SPEED
+    CURRENT_REVERSED = args_reverse
+    CURRENT_RETURN_HOME_AT_END = args_return_after_done
 
     path = waypoints(args_shape, args_amplitude)
 
@@ -201,7 +218,11 @@ def main(args_amplitude, args_loops, args_shape, emio_motors):
     commanded = robot.angles(emio_motors)
     commanded = rampTo(robot, np.zeros(4), emio_motors, start=commanded, maxCurrent=np.inf)
     print("Moving to the start of the path...")
-    commanded = rampTo(robot, anglesFromBend({"x": points[0][0], "z": points[0][1]}), emio_motors, start=commanded,
+    if CURRENT_REVERSED:
+        commanded = rampTo(robot, anglesFromBend({"x": points[len(points) - 1][0], "z": points[len(points) - 1][1]}), emio_motors, start=commanded,
+                        maxStep=args_speed * LOOP_PERIOD, period=LOOP_PERIOD, maxCurrent=MAX_CURRENT)
+    else:
+        commanded = rampTo(robot, anglesFromBend({"x": points[0][0], "z": points[0][1]}), emio_motors, start=commanded,
                         maxStep=args_speed * LOOP_PERIOD, period=LOOP_PERIOD, maxCurrent=MAX_CURRENT)
     TRAJECTORY_IS_ACTIVE = True # Locks motor control away from keyboard
     CURRENT_LOOP = 0

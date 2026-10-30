@@ -3,8 +3,6 @@ from emioapi._logging_config import logger
 from emioapi.emiomotors import EmioMotors
 import tkinter as tk
 from tkinter import ttk
-import threading
-import time
 import signal
 import traceback
 import numpy as np
@@ -19,6 +17,7 @@ GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]
 system_exit = False
 fixed_trajectory_in_progress = False
+currently_recording = False
 
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
@@ -38,6 +37,9 @@ custom_image = None
 traj_shape_val = None
 traj_amplitude_val = None
 traj_loops_val = None
+traj_fast_return_home_val = None
+traj_reverse_val = None
+traj_return_when_terminated_val = None
 
 # SIMULTANEOUS CONTROL VERSION
 
@@ -78,6 +80,7 @@ text_error = None
 text_valid_trackers = None
 text_last_pressed = None
 text_intermeans_intensity = None
+text_recording_state = None
 
 def raise_stop_flag():
     global system_exit
@@ -95,7 +98,11 @@ def set_home_pos():
     global text_home_joints
     global COORDS_ORIGIN_JOINT_POS
     global fixed_trajectory_in_progress
+    if currently_recording:
+        print("Currently recording, cannot set home")
+        return
     if fixed_trajectory_in_progress:
+        print("Currently running fixed trajectory, cannot set home")
         return
     if current_end_effector_coords is None:
         return
@@ -108,16 +115,19 @@ def set_home_pos():
 def return_home_direct():
     global COORDS_ORIGIN_JOINT_POS
     global fixed_trajectory_in_progress
+    global traj_fast_return_home_val
     if fixed_trajectory_in_progress:
         return
     # teleop.set_joint_angles(COORDS_ORIGIN_JOINT_POS, emio_motors)
-    trajectory.terminate_current(emio_motors, True)
+    trajectory.terminate_current(emio_motors, traj_fast_return_home_val.get())
 
 def key_handler(event):
     global keys_pressed
     global text_last_pressed
     global fixed_trajectory_in_progress
     global emio_motors
+    if currently_recording:
+        text_last_pressed.set("Recording ongoing")
     if fixed_trajectory_in_progress:
         # Only checked for q key
         if event.char == "q":
@@ -135,7 +145,15 @@ def goto_trajectory():
     global traj_amplitude_val
     global traj_loops_val
     global traj_shape_val
+    global traj_reverse_val
+    global traj_return_when_terminated_val
     global emio_motors
+    global currently_recording
+
+    if currently_recording:
+        print("Recording in progress, cannot start trajectory")
+        return
+
     try:
         amplitude_val = float(traj_amplitude_val.get())
     except Exception as e:
@@ -145,7 +163,13 @@ def goto_trajectory():
     except Exception as e:
         loops_val = 1
     if traj_shape_val.get() and len(traj_shape_val.get()) > 0:
-        trajectory.main(amplitude_val, loops_val, traj_shape_val.get(), emio_motors)
+        trajectory.main(amplitude_val, loops_val, traj_shape_val.get(), traj_reverse_val.get(), traj_return_when_terminated_val.get(), emio_motors)
+
+def recording_toggle():
+    global text_recording_state
+    # TODO: Complete
+    text_recording_state.set("Stop recording")
+    pass
 
 def signal_handler(sig, frame):
     global system_exit
@@ -294,12 +318,16 @@ def main():
     global text_valid_trackers
     global text_intermeans_intensity
     global text_last_pressed
+    global text_recording_state
     global COORDS_ORIGIN
     global COORDS_ORIGIN_JOINT_POS
     global custom_image
     global traj_shape_val
     global traj_amplitude_val
     global traj_loops_val
+    global traj_reverse_val
+    global traj_fast_return_home_val
+    global traj_return_when_terminated_val
     global emio_motors
 
     # If pass, revert to mode 2
@@ -320,6 +348,21 @@ def main():
         control_window.title("ME4242 Navigation")
         control_window.geometry("400x600")
 
+        text_calibration_status = tk.StringVar(value="Calibration status: " + str(navigation_mode))
+        text_home_pos = tk.StringVar(value="Home position: " + str(COORDS_ORIGIN))
+        text_home_joints = tk.StringVar(value="Home joints: " + str(COORDS_ORIGIN_JOINT_POS))
+        text_error = tk.StringVar(value="Error: -")
+        text_valid_trackers = tk.StringVar(value="Valid trackers: -")
+        text_intermeans_intensity = tk.StringVar(value="Intermeans intensity: ")
+        text_last_pressed = tk.StringVar(value="No keys pressed")
+        text_recording_state = tk.StringVar(value="Start recording")
+        traj_amplitude_val = tk.StringVar(value="1.0")
+        traj_loops_val = tk.StringVar(value="1")
+        traj_shape_val = tk.StringVar()
+        traj_reverse_val = tk.BooleanVar()
+        traj_fast_return_home_val = tk.BooleanVar()
+        traj_return_when_terminated_val = tk.BooleanVar()
+
         ttk.Label(
             control_window,
             text="ME4242 Navigation Project",
@@ -332,22 +375,17 @@ def main():
             command=set_home_pos
         ).pack(pady=10)
 
+        ttk.Checkbutton(
+            control_window,
+            text="IGNORE SPEED LIMITS",
+            variable=traj_fast_return_home_val,
+        )
+
         ttk.Button(
             control_window,
             text="Return Home",
             command=return_home_direct
         ).pack(pady=10)
-
-        text_calibration_status = tk.StringVar(value="Calibration status: " + str(navigation_mode))
-        text_home_pos = tk.StringVar(value="Home position: " + str(COORDS_ORIGIN))
-        text_home_joints = tk.StringVar(value="Home joints: " + str(COORDS_ORIGIN_JOINT_POS))
-        text_error = tk.StringVar(value="Error: -")
-        text_valid_trackers = tk.StringVar(value="Valid trackers: -")
-        text_intermeans_intensity = tk.StringVar(value="Intermeans intensity: ")
-        text_last_pressed = tk.StringVar(value="No keys pressed")
-        traj_amplitude_val = tk.StringVar(value="1.0")
-        traj_loops_val = tk.StringVar(value="1")
-        traj_shape_val = tk.StringVar()
 
         #ttk.Label(
         #    control_window,
@@ -413,11 +451,29 @@ def main():
             textvariable=traj_loops_val
         ).pack()
 
+        ttk.Checkbutton(
+            control_window,
+            text="Reverse playback",
+            variable=traj_reverse_val,
+        )
+
+        ttk.Checkbutton(
+            control_window,
+            text="Return home on termination",
+            variable=traj_return_when_terminated_val,
+        )
+
         ttk.Button(
             control_window,
             text="Go to trajectory",
             command=goto_trajectory
         ).pack(pady=10)
+
+        #ttk.Button(
+        #    control_window,
+        #    textvariable=text_recording_state,
+        #    command=recording_toggle
+        #).pack(pady=10)
 
         #ttk.Button(
         #    control_window,
@@ -460,10 +516,11 @@ def main():
         root.mainloop()
 
     except Exception as e:
-        print(traceback.format_exc())
+        # print(traceback.format_exc())
         logger.exception(f"An error occurred: {e}")
     # Close GUI window and motors
-    teleop.shutdown(emio_motors)
+    if emio_motors is not None:
+        teleop.shutdown(emio_motors)
     if emio_camera:
         emio_camera.close()
     if emio_motors:
