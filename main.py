@@ -12,6 +12,8 @@ import trajectory
 from trajectory import get_trajectory_is_active
 from PIL import Image, ImageTk
 import robot_io
+import csv
+import os
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r']
 keys_pressed = [False, False, False, False, False, False]
@@ -167,9 +169,13 @@ def goto_trajectory():
 
 def recording_toggle():
     global text_recording_state
-    # TODO: Complete
-    text_recording_state.set("Stop recording")
-    pass
+    global currently_recording
+    if currently_recording:
+        text_recording_state.set("Start recording")
+        currently_recording = stop_recording()
+    else:
+        text_recording_state.set("Stop recording")
+        currently_recording = start_recording()
 
 def signal_handler(sig, frame):
     global system_exit
@@ -181,6 +187,17 @@ def check_exit():
         root.quit()
     else:
         root.after(50, check_exit)
+
+# Return True if recording successfully started, False otherwise
+def start_recording():
+    # Filename check
+    filename = traj_shape_val.get()
+    if filename in
+    return False
+
+# Return False if recording successfully stopped, True otherwise
+def stop_recording():
+    return True
 
 # Use intermeans to get foreground / background thresholding
 # Threshold lvl = min value diff tolerable by the program
