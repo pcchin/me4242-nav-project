@@ -417,7 +417,7 @@ def main():
             control_window,
             text="IGNORE SPEED LIMITS",
             variable=traj_fast_return_home_val,
-        )
+        ).pack(pady=10)
 
         ttk.Button(
             control_window,
@@ -493,13 +493,13 @@ def main():
             control_window,
             text="Reverse playback",
             variable=traj_reverse_val,
-        )
+        ).pack(pady=10)
 
         ttk.Checkbutton(
             control_window,
             text="Return home on termination",
             variable=traj_return_when_terminated_val,
-        )
+        ).pack(pady=10)
 
         ttk.Button(
             control_window,
@@ -507,11 +507,11 @@ def main():
             command=goto_trajectory
         ).pack(pady=10)
 
-        #ttk.Button(
-        #    control_window,
-        #    textvariable=text_recording_state,
-        #    command=recording_toggle
-        #).pack(pady=10)
+        ttk.Button(
+            control_window,
+            textvariable=text_recording_state,
+            command=recording_toggle
+        ).pack(pady=10)
 
         #ttk.Button(
         #    control_window,
