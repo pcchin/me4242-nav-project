@@ -20,6 +20,8 @@ keys_pressed = [False, False, False, False, False, False]
 system_exit = False
 fixed_trajectory_in_progress = False
 currently_recording = False
+current_csv_file = None
+current_csv_file_writer = None
 
 TASK_SPACE_BOUNDARY = [[-135,110],[-330,0],[-100,100]]
 COORDS_ORIGIN = [0,-200,0]
@@ -190,13 +192,28 @@ def check_exit():
 
 # Return True if recording successfully started, False otherwise
 def start_recording():
+    global current_csv_file
+    global current_csv_file_writer
     # Filename check
     filename = traj_shape_val.get()
-    if filename in
-    return False
+    if filename in trajectory.SHAPES:
+        print("Existing shape used, unable to start")
+        return False
+    current_csv_file = open(filename + '.csv', 'w', newline='')
+    current_csv_file_writer = csv.writer(current_csv_file)
+    print("Starting recording to " + filename + ".csv")
+    return True
 
 # Return False if recording successfully stopped, True otherwise
 def stop_recording():
+    global current_csv_file
+    global current_csv_file_writer
+    if current_csv_file is not None:
+        if current_csv_file:
+            current_csv_file.close()
+        current_csv_file_writer = None
+        current_csv_file = None
+    print("Recording done")
     return True
 
 # Use intermeans to get foreground / background thresholding
@@ -244,6 +261,8 @@ def update():
     global text_error
     global custom_image
     global fixed_trajectory_in_progress
+    global current_csv_file_writer
+    global currently_recording
 
     try:
         emio_camera.update()
@@ -313,6 +332,9 @@ def update():
         keys_pressed = [False, False, False, False, False, False]
         # Motor updates are handled by the teleop side
         trajectory.update(emio_motors)
+
+        if currently_recording and current_csv_file_writer is not None:
+            current_csv_file_writer.writerow(emio_motors.angles)
 
         root.after(10, update)
     except KeyboardInterrupt:
