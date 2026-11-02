@@ -47,10 +47,11 @@ def get_common_zero():
 
 def anglesFromBend(bend):
     """The 4 motor angles for a bend: each pair winds one cable and releases the other by the same angle."""
+    global COMMON_ZERO
     theta = np.zeros(4)
     for axis, (plus, minus) in PAIRS.items():
         theta[plus], theta[minus] = bend[axis], -bend[axis]
-    return theta
+    return theta + COMMON_ZERO
 
 
 def applyKey(theta, key, step, maxTheta):
@@ -93,6 +94,14 @@ def sync_commanded(emio_motors):
     global bend
     commanded = robot.angles(emio_motors)
     bend = bendFromAngles(commanded)
+    print(f"Commanded reset to: {commanded}, bend reset to: {bend}")
+
+def reset_commanded_bend():
+    global commanded
+    global bend
+    global COMMON_ZERO
+    commanded = COMMON_ZERO
+    bend = bendFromAngles(commanded)
 
 def on_key_pressed(keys_pressed, emio_motors):
     global commanded
@@ -114,6 +123,7 @@ def on_key_pressed(keys_pressed, emio_motors):
     target = np.array(commanded, dtype=float)
     for key in keys_pressed:
         target = applyKey(target, key, step, maxTheta)
+    # Potentially buggy code: Return home without using rampTo causes next keypress to go back to original
     if not np.array_equal(target, commanded):
         robot.set_angles(target, emio_motors)
         currents = robot.currents(emio_motors)

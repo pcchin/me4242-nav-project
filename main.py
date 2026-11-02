@@ -13,6 +13,7 @@ from trajectory import get_trajectory_is_active
 from PIL import Image, ImageTk
 import robot_io
 import csv
+import cv2
 
 GLOBAL_KEYS = ['w', 'a', 's', 'd','q', 'r', '1', '2', '3', '4', '5', '6', '7', '8']  # 1-8: one motor, see teleop.MOTOR_KEYS
 keys_pressed = [False] * len(GLOBAL_KEYS)
@@ -45,6 +46,10 @@ traj_loops_val = None
 traj_fast_return_home_val = None
 traj_reverse_val = None
 traj_return_when_terminated_val = None
+
+# EMIO API depth camera parameters
+depth_max = 430
+depth_min = 2
 
 # SIMULTANEOUS CONTROL VERSION
 
@@ -265,6 +270,39 @@ def untwist_at_origin():
     # Uncoil back
     trajectory.terminate_current(emio_motors)
 
+# CCL + Hough transform
+def check_for_obstacles():
+    global emio_camera
+    global custom_image
+    # Source: https://www.geeksforgeeks.org/machine-learning/python-opencv-connected-component-labeling-and-analysis/
+    # Using emio_camera.depth_frame (255 intensity, single channel)
+    # 1. 7x7 Gaussian smoothing
+    kernel = np.ones((7,7),np.float32)/49
+    blurred = cv2.filter2D(emio_camera.depth_frame,-1,kernel)
+    # 2. Filter out depth below limit + erosion (From EMOI API code)
+    mask = cv2.inRange(blurred, depth_min, depth_max)
+    erosion_shape = cv2.MORPH_RECT
+    erosion_size = emio_camera._camera.parameter['erosion_size']
+    element = cv2.getStructuringElement(erosion_shape, (2 * erosion_size + 1, 2 * erosion_size + 1),
+                                        (erosion_size, erosion_size))
+    mask = cv2.erode(mask, element, iterations=3)
+    mask = cv2.dilate(mask, element, iterations=3)
+    maskFrame = cv2.bitwise_and(blurred, blurred, mask=mask)
+    # 3. Connected component labeling from mask frame
+    # Requires converting to uint8 array
+    analysis = cv2.connectedComponentsWithStats(maskFrame.astype(np.uint8))
+    (totalLabels, label_ids, values, centroid) = analysis
+    #print(totalLabels)
+    #print(label_ids)
+    #print(values)
+    #print(centroid)
+    # TODO: Hough transform
+
+    img = Image.fromarray(maskFrame)
+    photo = ImageTk.PhotoImage(img, master=custom_image)
+    custom_image.configure(image=photo)
+    custom_image.image = photo
+
 def update():
     global emio_camera
     global emio_motors
@@ -307,14 +345,14 @@ def update():
         # Segmentation: HSV frame (saturation) edge detection
         #(sat_threshold, sat_threshold_frame) = get_intermeans_intensity(emio_camera.hsv_frame[:,:,1])
         #text_intermeans_intensity.set("Saturation threshold: " + str(sat_threshold))
-        # Display thresholded frame
-
         # TODO: Create slam output frame
-        if False:
-            img = Image.fromarray(slam_output_frame, mode="L")
-            photo = ImageTk.PhotoImage(img, master=custom_image)
-            custom_image.configure(image=photo)
-            custom_image.image = photo
+        #if False:
+        #    img = Image.fromarray(slam_output_frame, mode="L")
+        #    photo = ImageTk.PhotoImage(img, master=custom_image)
+        #    custom_image.configure(image=photo)
+        #    custom_image.image = photo
+
+        check_for_obstacles()
 
         # Find new postion of end effector
         if (not valid_trackers) or len(valid_trackers) == 0:
@@ -557,14 +595,15 @@ def main():
         # Create SLAM output window
         custom_image_window = tk.Toplevel(root)
         custom_image_window.title("ME4242 SLAM")
+        custom_image_window.geometry("800x600")
         custom_image = tk.Label(custom_image_window)
         custom_image.pack()
 
         # Init motors
         emio_motors = EmioMotors()
         if emio_motors.findAndOpen(device_name=None, multi_turn=(GLOBAL_MAX_THETA > SINGLE_TURN_LIMIT)) < 0:
-            raise RuntimeError(f"Could not connect to the Emio motors. Check the USB, "
-                               f"the power supply, and that Emio Labs / other scripts aren't using the port.")
+            raise RuntimeError("Could not connect to the Emio motors. Check the USB, "
+                             "the power supply, and that Emio Labs / other scripts aren't using the port.")
 
         teleop.init_motors(emio_motors)
         root.after(int(teleop.LOOP_PERIOD * 1000), update)
